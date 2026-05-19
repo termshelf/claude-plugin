@@ -1,0 +1,18 @@
+{
+  "name": "termshelf",
+  "description": "Integrate TermShelf-published legal texts (privacy, imprint, terms, cookie policy, …) into your website or app via the Public Delivery API.",
+  "version": "0.1.0",
+  "author": {
+    "name": "TermShelf"
+  },
+  "homepage": "https://termshelf.de",
+  "keywords": [
+    "termshelf",
+    "legal",
+    "privacy",
+    "imprint",
+    "terms",
+    "delivery-api",
+    "compliance"
+  ]
+}

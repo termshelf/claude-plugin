@@ -1,0 +1,13 @@
+{
+  "name": "termshelf",
+  "owner": {
+    "name": "TermShelf"
+  },
+  "plugins": [
+    {
+      "name": "termshelf",
+      "source": "./",
+      "description": "Integrate TermShelf-published legal texts (privacy, imprint, terms, cookie policy, …) into your website or app via the Public Delivery API."
+    }
+  ]
+}

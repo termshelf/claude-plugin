@@ -1,0 +1,35 @@
+---
+// src/pages/datenschutz.astro — Astro page that embeds a TermShelf privacy policy.
+// Use https://api.termshelf.de (German market) or https://api.termshelf.com (international).
+// Both serve the same content — pick whichever matches your TermShelf workspace apex.
+const TERMSHELF_BASE = import.meta.env.TERMSHELF_PUBLIC_API_BASE_URL ?? "https://api.termshelf.de";
+const ACCOUNT_HASH = "K57CDHNXYQ";        // 10-char Crockford base32, from the document Links tab
+const SITE_SLUG = "main-site";            // renaming the slug invalidates this URL
+const TYPE_CODE = "privacy_policy"; // seeded baseline codes: privacy_policy | imprint | terms | withdrawal | cookie_policy
+
+const url =
+  `${TERMSHELF_BASE}/v1/delivery/${ACCOUNT_HASH}/${SITE_SLUG}/documents/${TYPE_CODE}/html` +
+  // Use the bare locale code your workspace publishes under (`de`, `en`).
+  // Region-qualified codes like `de-DE` will 404 unless the workspace
+  // explicitly configured them.
+  `?locale=de&market=DE&profile=B2C`;
+
+const res = await fetch(url);
+if (!res.ok && res.status !== 404) {
+  throw new Error(`TermShelf delivery failed: ${res.status}`);
+}
+const html = res.status === 404 ? null : await res.text();
+---
+
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <title>Datenschutzerklärung</title>
+    <link rel="stylesheet" href="/termshelf.css" />
+  </head>
+  <body>
+    <main class="ts-host">
+      {html ? <div set:html={html} /> : <p>Datenschutzerklärung wird vorbereitet.</p>}
+    </main>
+  </body>
+</html>
