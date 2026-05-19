@@ -1,7 +1,7 @@
 {
   "name": "termshelf",
-  "description": "Integrate TermShelf-published legal texts (privacy, imprint, terms, cookie policy, …) into your website or app via the Public Delivery API.",
-  "version": "0.1.0",
+  "description": "Integrate TermShelf-published legal texts into your website or app (Tier 1), and drive brand-onboarding workflows end-to-end via the external Management API (Tier 2).",
+  "version": "0.2.0",
   "author": {
     "name": "TermShelf"
   },
@@ -13,6 +13,14 @@
     "imprint",
     "terms",
     "delivery-api",
-    "compliance"
-  ]
+    "management-api",
+    "compliance",
+    "brand-onboarding"
+  ],
+  "mcpServers": {
+    "termshelf-author": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp-server/index.mjs"]
+    }
+  }
 }

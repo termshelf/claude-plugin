@@ -1,10 +1,11 @@
 # TermShelf Claude Code plugin
 
-Integrate [TermShelf](https://termshelf.de) — a Legal Content Operations system — into your website or app with one prompt.
+Two skills for working with [TermShelf](https://termshelf.de), a Legal Content Operations system:
 
-This plugin teaches Claude Code how to consume the TermShelf Public Delivery API: how to construct URLs, how to cache responses, which classes to style, and what idiomatic integration code looks like for popular frameworks (Next.js, Astro, SvelteKit, Express, Laravel Blade, plain HTML).
-
-It does **not** call any TermShelf service or transmit any data on your behalf — the skill is just instructions Claude follows to generate code locally.
+| Skill | Audience | What it does |
+|---|---|---|
+| `termshelf`        | **Developers** | Generate read-only integration code (Next.js / Astro / Express / Laravel / …) that consumes already-published legal texts via the TermShelf Public Delivery API. No credentials needed. |
+| `termshelf-author` | **Operators**  | Drive a brand-onboarding workflow end-to-end against the TermShelf Management API — create brands, sites, domains, and per-locale variable / snippet overrides via an MCP server. Requires a token. **Stops before publishing.** |
 
 ## Install
 
@@ -15,16 +16,16 @@ In Claude Code:
 /plugin install termshelf@termshelf
 ```
 
-Or test locally before publishing — from inside Claude Code, point `/plugin marketplace add` at a local clone of this repo:
+Or for local testing — from inside Claude Code, point `/plugin marketplace add` at a local clone:
 
 ```text
 /plugin marketplace add /absolute/path/to/termshelf-claude-plugin
 /plugin install termshelf@termshelf
 ```
 
-## Use
+## Tier 1 — `termshelf` (developer-facing)
 
-Once installed, ask Claude in plain language:
+Ask Claude in plain language:
 
 ```text
 Add my TermShelf privacy policy to this Next.js app.
@@ -40,17 +41,64 @@ Generate a Laravel Blade partial that fetches my TermShelf terms
 in JSON and renders them with my own template.
 ```
 
-Claude will ask for whichever of these it still needs:
+Claude will ask for whichever of these it still needs (account hash, site slug, document type code, target locale, …) and produces a working integration with proper ETag caching, framework-idiomatic placement, and a starter stylesheet for the `ts-document` classes.
 
-- your **account hash** (10-char Crockford base32)
-- your **site slug**
-- the **document type code** (`privacy_policy`, `imprint`, `terms`, `withdrawal`, `cookie_policy`, …)
-- the **target tuple** (locale + optionally market + site profile)
-- your **public-API base URL** (`https://api.termshelf.de` or `https://api.termshelf.com` — both serve the same content; pick the apex your workspace lives on)
+> **Shortcut**: open your TermShelf customer-app → avatar dropdown → **"Integration reference"**. The page lists everything Claude needs on one screen. Click **"Copy integration context"** and paste the blob into the chat — Claude parses it and skips the questions.
 
-> **Shortcut**: open your TermShelf customer-app → avatar dropdown (top right) → **"Integration reference"**. The page lists every value above on one screen. Hit **"Copy integration context"** and paste the blob into the chat — Claude parses it and skips the questions.
+This tier does NOT call any TermShelf service on your behalf. It generates code locally.
 
-It then generates a working integration: fetch with proper ETag handling, the right component for your framework, and a starter stylesheet for the `ts-document` class hierarchy.
+## Tier 2 — `termshelf-author` (operator-facing)
+
+This tier **does** call TermShelf — it drives the `/api/v1/management/*` surface programmatically.
+
+### One-time setup
+
+After installing the plugin, install the MCP server's Node dependencies:
+
+```sh
+cd "$(claude code plugins root)/termshelf/mcp-server"   # or your manual clone path
+npm install
+```
+
+Then issue a Management API token in the customer-app (**Settings → API Tokens**) with the scopes you want Claude to have:
+
+| Scope | What it grants |
+|---|---|
+| `structure:read`   | List sites + their domains, markets, profiles |
+| `content:read`     | List workspace variables, snippets, locales |
+| `structure:write`  | Create brands, sites, domains, attach markets |
+| `overrides:write`  | Create per-locale variable and snippet overrides |
+
+For the typical brand-onboarding workflow, all four. **Do NOT** include `publish:trigger` — publishing stays in your hands inside the customer-app.
+
+Export the token before launching Claude Code:
+
+```sh
+export TERMSHELF_TOKEN=<your-token>
+# For local development:
+# export TERMSHELF_BASE_URL=http://app.termshelf.local:9191
+```
+
+The MCP server reads the token from the environment and **never** echoes it. If you ever see it in a Claude transcript, rotate it.
+
+### Use
+
+```text
+Onboard "Acme Legal GmbH" (https://acme.de) as a new brand under my workspace.
+Create the site, domain, and the per-locale variable + snippet overrides
+needed for the documents we already have. Stop before publishing.
+```
+
+Claude will:
+
+1. Discover existing variables / snippets / locales in your workspace.
+2. Fetch the brand's website and (if needed) ask you for missing legal entity details.
+3. Produce a structured plan as a markdown table.
+4. Wait for your explicit approval.
+5. Execute the plan — brand, site, domain, market, variable + snippet overrides.
+6. Hand back to you with a link to review the result and hit **Publish** in the customer-app.
+
+See [`skills/termshelf-author/SKILL.md`](skills/termshelf-author/SKILL.md) for the full workflow + error-handling contract.
 
 ## What's inside
 
@@ -58,27 +106,34 @@ It then generates a working integration: fetch with proper ETag handling, the ri
 .
 ├── .claude-plugin/
 │   ├── marketplace.json        # marketplace catalog (single plugin)
-│   └── plugin.json             # plugin manifest
+│   └── plugin.json             # plugin manifest + MCP server registration
+├── mcp-server/                 # Tier 2 — Node MCP server
+│   ├── index.mjs               # tool definitions for /api/v1/management/*
+│   ├── package.json
+│   └── README.md               # setup + tool reference
 └── skills/
-    └── termshelf/
-        ├── SKILL.md            # the instructions Claude follows
-        ├── reference/
-        │   ├── api-contract.md # URL shape, query params, response envelope
-        │   ├── caching.md      # ETag + Cache-Control patterns
-        │   └── styling.md      # ts-document / ts-section / ts-block classes
-        └── templates/
-            ├── nextjs.tsx      # App Router server component
-            ├── astro.astro     # Astro page fragment
-            ├── express.js      # Express + node-fetch + in-memory cache
-            ├── laravel.blade.php # Blade partial via Http::get
-            └── styles.css      # Drop-in stylesheet for ts-document
+    ├── termshelf/              # Tier 1 — read-only integration helper
+    │   ├── SKILL.md
+    │   ├── reference/
+    │   │   ├── api-contract.md
+    │   │   ├── caching.md
+    │   │   └── styling.md
+    │   └── templates/
+    │       ├── nextjs.tsx
+    │       ├── astro.astro
+    │       ├── express.js
+    │       ├── laravel.blade.php
+    │       └── styles.css
+    └── termshelf-author/       # Tier 2 — operator-facing workflow
+        └── SKILL.md
 ```
 
-## Limits
+## Boundaries
 
-This is the **Tier 1** skill: read-only on the developer's side, generates integration code only. It does not call any TermShelf API on your behalf, does not require an API key, and does not modify your TermShelf workspace.
-
-A future Tier 2 may call a small read-only TermShelf endpoint to look up your sites and document type codes automatically. That tier will require an API key and runs against authoring data; it's deliberately not part of this skill.
+- **Tier 1 (`termshelf`)** is read-only on the developer's side. It does not call any TermShelf API and does not require a token.
+- **Tier 2 (`termshelf-author`)** calls the Management API on your behalf, but only via the MCP server's typed tools. It does NOT call any read-only delivery endpoint. It does NOT publish.
+- Tier 2 deliberately leaves publishing to the operator. The token must not carry `publish:trigger`.
+- The two skills coexist; Claude picks the right one based on whether you're trying to embed published content (Tier 1) or author content / structure (Tier 2).
 
 ## License
 

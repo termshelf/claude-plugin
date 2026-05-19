@@ -1,0 +1,491 @@
+#!/usr/bin/env node
+/**
+ * TermShelf MCP server (MX phase 3, ADR-058).
+ *
+ * Exposes the `/api/v1/management/*` surface as typed MCP tools so a
+ * Claude Code session can drive a brand-onboarding workflow without
+ * the operator copy-pasting curl recipes.
+ *
+ * Configuration (env):
+ *   - TERMSHELF_TOKEN     (required)  bearer token issued from the
+ *                                     customer-app Settings → API Tokens
+ *                                     page (see MX-E02). The server
+ *                                     refuses to start without it and
+ *                                     NEVER echoes it back through any
+ *                                     tool result or log.
+ *   - TERMSHELF_BASE_URL  (optional)  defaults to https://app.termshelf.de
+ *                                     For local dev, point at e.g.
+ *                                     http://app.termshelf.local:9191
+ */
+
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { z } from "zod";
+
+// --- configuration ----------------------------------------------------------
+
+const TOKEN = process.env.TERMSHELF_TOKEN;
+const BASE_URL = (process.env.TERMSHELF_BASE_URL ?? "https://app.termshelf.de").replace(
+  /\/+$/,
+  "",
+);
+
+if (!TOKEN || TOKEN.trim() === "") {
+  process.stderr.write(
+    "TERMSHELF_TOKEN env var is required.\n" +
+      "Issue a token in the TermShelf customer-app: Settings → API Tokens.\n" +
+      "Then export TERMSHELF_TOKEN=<value> before launching the MCP server.\n",
+  );
+  process.exit(2);
+}
+
+// --- HTTP client ------------------------------------------------------------
+
+/**
+ * Call the management API. Returns a normalized envelope:
+ *   { ok: true, status, data }    on 2xx
+ *   { ok: false, status, error }  on 4xx/5xx — `error` is the JSON body
+ *
+ * The bearer token is added here and NEVER appears in tool input/output —
+ * callers see the body but not the credential.
+ */
+async function callManagement(method, path, { body, idempotencyKey } = {}) {
+  const url = `${BASE_URL}/api/v1/management${path}`;
+  const headers = {
+    Authorization: `Bearer ${TOKEN}`,
+    Accept: "application/json",
+  };
+  if (body !== undefined) {
+    headers["Content-Type"] = "application/json";
+  }
+  if (idempotencyKey) {
+    headers["Idempotency-Key"] = idempotencyKey;
+  }
+
+  let response;
+  try {
+    response = await fetch(url, {
+      method,
+      headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+  } catch (err) {
+    // Network-level failure (host unreachable, DNS, TLS, …). Map to a
+    // closed-set transport code so the skill can branch on it. The
+    // error message is the network library's text; we deliberately do
+    // not include URL or headers because the latter carry the bearer.
+    return {
+      ok: false,
+      status: 0,
+      error: {
+        message: err?.message ?? "Network request failed.",
+        code: "transport.unreachable",
+        base_url: BASE_URL,
+      },
+    };
+  }
+
+  const text = await response.text();
+  let parsed = null;
+  if (text.length > 0) {
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = { message: text };
+    }
+  }
+
+  if (response.ok) {
+    return { ok: true, status: response.status, data: parsed };
+  }
+  return { ok: false, status: response.status, error: parsed };
+}
+
+/**
+ * Format an MCP tool result.
+ *
+ * Success: textual JSON payload (Claude parses it back).
+ * Failure: textual envelope + `isError: true`. Closed-set codes from the
+ * server (auth.bearer_required, abilities.missing, validation.failed,
+ * resource.not_found, resource.conflict, override.ambiguous,
+ * rate_limit.exceeded, token.workspace_missing) flow through verbatim so
+ * the skill can branch on them.
+ */
+function asToolResult(result) {
+  if (result.ok) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(result.data, null, 2),
+        },
+      ],
+    };
+  }
+  return {
+    isError: true,
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(
+          {
+            http_status: result.status,
+            ...result.error,
+          },
+          null,
+          2,
+        ),
+      },
+    ],
+  };
+}
+
+// --- reusable schema fragments ---------------------------------------------
+
+const overrideAxes = {
+  brand_id: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe(
+      "Restrict the override to a specific brand. Combine with locale and optionally market/site_profile to narrow the axis tuple.",
+    ),
+  market_id: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe("Restrict the override to a specific market."),
+  site_profile_id: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe("Restrict the override to a specific site profile."),
+};
+
+const paginationInput = {
+  page: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe("Page number (1-indexed). Defaults to 1."),
+  per_page: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe("Rows per page. Default and maximum vary by endpoint."),
+};
+
+const idempotencyInput = {
+  idempotency_key: z
+    .string()
+    .min(1)
+    .max(255)
+    .optional()
+    .describe(
+      "Optional Idempotency-Key header. Same (token, route, key) tuple replays the original response within a 24h window — set this when retrying a previous request.",
+    ),
+};
+
+// --- server + tools ---------------------------------------------------------
+
+const server = new McpServer({
+  name: "termshelf",
+  version: "0.1.0",
+});
+
+// === Read tools ============================================================
+
+server.tool(
+  "whoami",
+  "Confirm authentication and return the bound user, workspace, and the active token's metadata. Use this to verify the MCP server is correctly configured and the token has the expected abilities.",
+  {},
+  async () => asToolResult(await callManagement("GET", "/whoami")),
+);
+
+server.tool(
+  "list_sites",
+  "List sites in the active workspace. Paginated; supports filtering by brand_id and status.",
+  {
+    brand_id: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe("Only return sites linked to this brand."),
+    status: z
+      .enum(["active", "archived"])
+      .optional()
+      .describe("Filter by site status."),
+    ...paginationInput,
+  },
+  async ({ brand_id, status, page, per_page }) => {
+    const params = new URLSearchParams();
+    if (brand_id !== undefined) params.set("brand_id", String(brand_id));
+    if (status) params.set("status", status);
+    if (page) params.set("page", String(page));
+    if (per_page) params.set("per_page", String(per_page));
+    const qs = params.toString();
+    return asToolResult(
+      await callManagement("GET", `/sites${qs ? `?${qs}` : ""}`),
+    );
+  },
+);
+
+server.tool(
+  "get_site",
+  "Fetch a single site by ID, including embedded domains, supported markets, and supported site profiles.",
+  {
+    site_id: z.number().int().positive().describe("Site row ID."),
+  },
+  async ({ site_id }) =>
+    asToolResult(await callManagement("GET", `/sites/${site_id}`)),
+);
+
+server.tool(
+  "list_workspace_variables",
+  "List workspace variables (the {{key}} placeholders embedded in document content). Each row exposes the published value, the is_locale_agnostic flag, and the count of existing overrides. Use this before deciding which variables a brand needs per-locale overrides for.",
+  {
+    q: z
+      .string()
+      .optional()
+      .describe("Substring filter against key + description."),
+    ...paginationInput,
+  },
+  async ({ q, page, per_page }) => {
+    const params = new URLSearchParams();
+    if (q) params.set("q", q);
+    if (page) params.set("page", String(page));
+    if (per_page) params.set("per_page", String(per_page));
+    const qs = params.toString();
+    return asToolResult(
+      await callManagement("GET", `/workspace-variables${qs ? `?${qs}` : ""}`),
+    );
+  },
+);
+
+server.tool(
+  "list_workspace_snippets",
+  "List workspace snippets (reusable rich-text clauses). Each row exposes the published blocks, is_locale_agnostic, and overrides_count. Archived snippets are excluded by default.",
+  {
+    q: z
+      .string()
+      .optional()
+      .describe("Substring filter against key + title + description."),
+    include_archived: z
+      .boolean()
+      .optional()
+      .describe("When true, archived snippets are included in the result."),
+    ...paginationInput,
+  },
+  async ({ q, include_archived, page, per_page }) => {
+    const params = new URLSearchParams();
+    if (q) params.set("q", q);
+    if (include_archived === true) params.set("exclude_archived", "0");
+    if (page) params.set("page", String(page));
+    if (per_page) params.set("per_page", String(per_page));
+    const qs = params.toString();
+    return asToolResult(
+      await callManagement("GET", `/workspace-snippets${qs ? `?${qs}` : ""}`),
+    );
+  },
+);
+
+server.tool(
+  "list_locales",
+  "List every locale code currently in use in the workspace — the union of the workspace's default_locale_code and every site's supported_locale_codes. Each entry flags whether it is the workspace default.",
+  {},
+  async () => asToolResult(await callManagement("GET", "/locales")),
+);
+
+// === Write tools ===========================================================
+
+server.tool(
+  "create_brand",
+  "Create a new brand in the active workspace. Brands sit above sites — a single brand can own multiple sites. Returns the persisted brand.",
+  {
+    name: z.string().min(1).max(255).describe("Brand display name."),
+    slug: z
+      .string()
+      .max(255)
+      .optional()
+      .describe("Optional URL-safe slug; the server generates one if omitted."),
+    display_name: z
+      .string()
+      .max(255)
+      .optional()
+      .describe("Optional alternate display label."),
+    notes: z
+      .string()
+      .max(5000)
+      .optional()
+      .describe("Free-text operator notes (max 5000 chars)."),
+    ...idempotencyInput,
+  },
+  async ({ idempotency_key, ...body }) =>
+    asToolResult(
+      await callManagement("POST", "/brands", {
+        body,
+        idempotencyKey: idempotency_key,
+      }),
+    ),
+);
+
+server.tool(
+  "create_site",
+  "Create a new site for an existing brand. Returns the persisted site with embedded domains (empty until add_domain_to_site is called).",
+  {
+    brand_id: z
+      .number()
+      .int()
+      .positive()
+      .describe("ID of the brand this site belongs to."),
+    name: z.string().min(1).max(255).describe("Site display name."),
+    slug: z
+      .string()
+      .max(255)
+      .optional()
+      .describe(
+        "Optional URL-safe slug; the server generates one if omitted. The slug is part of the public delivery URL — rename-sensitive.",
+      ),
+    display_name: z.string().max(255).optional(),
+    notes: z.string().max(5000).optional(),
+    default_locale_code: z
+      .string()
+      .max(16)
+      .optional()
+      .describe(
+        "BCP-47-like default locale for this site. Defaults to the workspace default if omitted.",
+      ),
+    supported_locale_codes: z
+      .array(z.string().max(16))
+      .optional()
+      .describe(
+        "All locales this site publishes in. Include default_locale_code if you set both.",
+      ),
+    ...idempotencyInput,
+  },
+  async ({ idempotency_key, ...body }) =>
+    asToolResult(
+      await callManagement("POST", "/sites", {
+        body,
+        idempotencyKey: idempotency_key,
+      }),
+    ),
+);
+
+server.tool(
+  "add_domain_to_site",
+  "Attach a domain (hostname) to an existing site. Pass primary=true to make it the site's primary domain.",
+  {
+    site_id: z.number().int().positive(),
+    hostname: z.string().min(1).max(255).describe("Bare hostname, e.g. acme.de"),
+    primary: z
+      .boolean()
+      .optional()
+      .describe("Mark this domain as primary; demotes any previous primary."),
+    notes: z.string().max(5000).optional(),
+    ...idempotencyInput,
+  },
+  async ({ site_id, idempotency_key, ...body }) =>
+    asToolResult(
+      await callManagement("POST", `/sites/${site_id}/domains`, {
+        body,
+        idempotencyKey: idempotency_key,
+      }),
+    ),
+);
+
+server.tool(
+  "attach_market_to_site",
+  "Attach an existing market to a site. Idempotent at the domain layer — re-attaching is a no-op. Returns the updated site detail with the markets array populated.",
+  {
+    site_id: z.number().int().positive(),
+    market_id: z.number().int().positive(),
+    ...idempotencyInput,
+  },
+  async ({ site_id, market_id, idempotency_key }) =>
+    asToolResult(
+      await callManagement("POST", `/sites/${site_id}/markets`, {
+        body: { market_id },
+        idempotencyKey: idempotency_key,
+      }),
+    ),
+);
+
+server.tool(
+  "create_variable_override",
+  "Create a workspace-variable override scoped by (locale, optionally brand_id / market_id / site_profile_id). Locale is always required at the domain layer — the is_locale_agnostic flag on the parent affects publishing, not whether per-locale overrides may exist. Returns the persisted override.",
+  {
+    variable_id: z.number().int().positive(),
+    value: z
+      .string()
+      .max(1024)
+      .describe(
+        "The overridden value. Plain string (max 1024 chars). Nested {{key}} tokens are NOT permitted.",
+      ),
+    locale: z
+      .string()
+      .min(1)
+      .max(32)
+      .describe("BCP-47-like locale tag, e.g. de or en-GB."),
+    ...overrideAxes,
+    ...idempotencyInput,
+  },
+  async ({ variable_id, idempotency_key, ...body }) =>
+    asToolResult(
+      await callManagement(
+        "POST",
+        `/workspace-variables/${variable_id}/overrides`,
+        {
+          body,
+          idempotencyKey: idempotency_key,
+        },
+      ),
+    ),
+);
+
+server.tool(
+  "create_snippet_override",
+  "Create a workspace-snippet override scoped by (locale, optionally brand_id / market_id / site_profile_id). If `blocks` is omitted, the server seeds the override's working_blocks from the structurally-closest parent. Pass blocks=[] to force an empty draft. Returns the persisted override.",
+  {
+    snippet_id: z.number().int().positive(),
+    locale: z.string().min(1).max(32),
+    ...overrideAxes,
+    blocks: z
+      .array(z.record(z.string(), z.unknown()))
+      .optional()
+      .describe(
+        "Rich-text block list. Each block is an object with at least a `kind` and the kind-specific payload (e.g. {kind: 'paragraph', text: '…'}). Omit to seed from the closest parent.",
+      ),
+    ...idempotencyInput,
+  },
+  async ({ snippet_id, idempotency_key, ...body }) =>
+    asToolResult(
+      await callManagement(
+        "POST",
+        `/workspace-snippets/${snippet_id}/overrides`,
+        {
+          body,
+          idempotencyKey: idempotency_key,
+        },
+      ),
+    ),
+);
+
+// --- boot --------------------------------------------------------------------
+
+async function main() {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+}
+
+main().catch((err) => {
+  // Stderr-only; never expose details that could include the token.
+  process.stderr.write(`termshelf-mcp-server failed: ${err?.message ?? err}\n`);
+  process.exit(1);
+});

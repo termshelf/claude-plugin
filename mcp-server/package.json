@@ -1,0 +1,21 @@
+{
+  "name": "@termshelf/mcp-server",
+  "version": "0.1.0",
+  "description": "MCP server for the TermShelf external management API. Lets Claude Code create brands, sites, domains, and per-locale overrides programmatically.",
+  "private": true,
+  "type": "module",
+  "main": "index.mjs",
+  "bin": {
+    "termshelf-mcp-server": "./index.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node index.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "zod": "^3.23.8"
+  }
+}
