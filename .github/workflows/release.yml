@@ -1,0 +1,102 @@
+name: Release plugin
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump: patch | minor | major | explicit (e.g. 1.2.3)'
+        required: true
+        default: patch
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: mcp-server/package-lock.json
+
+      - name: Install build dependencies
+        working-directory: mcp-server
+        run: npm ci
+
+      - name: Resolve next version
+        id: version
+        run: |
+          set -euo pipefail
+          current=$(node -p "require('./.claude-plugin/plugin.json').version")
+          bump='${{ inputs.bump }}'
+          if [[ "$bump" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            next="$bump"
+          else
+            IFS='.' read -r major minor patch <<< "$current"
+            case "$bump" in
+              patch) patch=$((patch + 1));;
+              minor) minor=$((minor + 1)); patch=0;;
+              major) major=$((major + 1)); minor=0; patch=0;;
+              *) echo "::error::Invalid bump '$bump' (expected patch|minor|major|X.Y.Z)"; exit 1;;
+            esac
+            next="${major}.${minor}.${patch}"
+          fi
+          if git rev-parse "v${next}" >/dev/null 2>&1; then
+            echo "::error::Tag v${next} already exists"
+            exit 1
+          fi
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "next=$next" >> "$GITHUB_OUTPUT"
+          echo "Bumping ${current} -> ${next}"
+
+      - name: Bump version in plugin.json
+        run: |
+          node -e "
+            const fs = require('fs');
+            const path = '.claude-plugin/plugin.json';
+            const json = JSON.parse(fs.readFileSync(path, 'utf8'));
+            json.version = '${{ steps.version.outputs.next }}';
+            fs.writeFileSync(path, JSON.stringify(json, null, 2) + '\n');
+          "
+
+      - name: Build bundled MCP server
+        working-directory: mcp-server
+        run: npm run build
+
+      - name: Commit, tag, push
+        env:
+          NEXT: ${{ steps.version.outputs.next }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .claude-plugin/plugin.json mcp-server/dist
+          if git diff --cached --quiet; then
+            echo "::error::No changes to commit — version bump or bundle produced nothing new"
+            exit 1
+          fi
+          git commit -m "release: v${NEXT}"
+          git tag -a "v${NEXT}" -m "Release v${NEXT}"
+          git push origin HEAD:${GITHUB_REF_NAME}
+          git push origin "v${NEXT}"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.next }}
+          name: v${{ steps.version.outputs.next }}
+          generate_release_notes: true
