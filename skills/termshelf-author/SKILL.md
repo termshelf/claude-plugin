@@ -33,9 +33,21 @@ Every write tool accepts an optional `idempotency_key`. Use it when retrying a p
 
 ## The token is not yours to display
 
-The MCP server holds a bearer token in its environment. You do not see it. Do not ask the operator for it, do not echo it in any response, do not write it to any file. If the operator pastes a token into the chat by accident, tell them to rotate it immediately in the customer-app Settings → API Tokens page and to re-export the new value before re-launching this session.
+The MCP server holds a bearer token in its environment. You do not see it. Do not ask the operator for it, do not echo it in any response, do not write it to any file. If the operator pastes a token into the chat by accident, tell them to rotate it immediately at [Settings → API Tokens](https://app.termshelf.de/app/settings/api-tokens) and to re-export the new value before re-launching this session.
 
 If a tool returns `auth.bearer_required`, the token is missing or invalid — surface the error to the operator and stop. Do not retry.
+
+### How the operator obtains a token
+
+If the MCP tools are not available at all (no `whoami` etc.), or the operator hasn't set this up yet, point them at [Settings → API Tokens](https://app.termshelf.de/app/settings/api-tokens) in the TermShelf customer-app. They need to issue a token with the abilities `structure:write`, `overrides:write`, and `content:read`, then export it before launching Claude Code:
+
+```bash
+export TERMSHELF_TOKEN=<value>
+# Optional, only if not hitting prod:
+# export TERMSHELF_BASE_URL=http://localhost:8000
+```
+
+`/reload-plugins` does not restart MCP server processes, so a fresh Claude Code session is required for the env var to take effect.
 
 ## The brand-onboarding workflow
 
@@ -45,7 +57,7 @@ Always call `whoami` first, exactly once at the start. It tells you:
 - which workspace you're operating on
 - which abilities the active token has
 
-If any abilities you need (`structure:write`, `overrides:write`, `content:read`) are missing, stop and tell the operator. They issue a new token with the right scopes; you do not negotiate around missing ones.
+If any abilities you need (`structure:write`, `overrides:write`, `content:read`) are missing, stop and tell the operator. They issue a new token with the right scopes at [Settings → API Tokens](https://app.termshelf.de/app/settings/api-tokens); you do not negotiate around missing ones.
 
 ### 2. Discover
 
@@ -115,14 +127,14 @@ Surface each tool's result back briefly ("Brand Acme Legal created (id=42)") so 
 
 | Code | Meaning | What to do |
 |---|---|---|
-| `auth.bearer_required` | Token missing or invalid | Stop, tell operator to check `TERMSHELF_TOKEN` env |
-| `abilities.missing` | Token lacks the required ability | Stop, list which ability was missing, tell operator to reissue |
+| `auth.bearer_required` | Token missing or invalid | Stop, tell operator to check `TERMSHELF_TOKEN` env and reissue at https://app.termshelf.de/app/settings/api-tokens if needed |
+| `abilities.missing` | Token lacks the required ability | Stop, list which ability was missing, tell operator to reissue at https://app.termshelf.de/app/settings/api-tokens |
 | `validation.failed` | Body invalid | Show the per-field errors, ask operator how to fix |
 | `resource.not_found` | The referenced ID doesn't exist in this workspace | Did you reference the wrong workspace? Ask operator. |
 | `resource.conflict` | Domain rule blocked the write (archived, slug collision, …) | Show the message, ask operator how to disambiguate |
 | `override.ambiguous` | The proposed override would create an unresolvable axis tuple | Suggest the operator narrow with another axis (market, profile) |
 | `rate_limit.exceeded` | Token over its budget | Wait the `retry_after_seconds` and retry once; if still failing, stop |
-| `token.workspace_missing` | Token not bound to a workspace | Stop, tell operator to revoke and reissue the token |
+| `token.workspace_missing` | Token not bound to a workspace | Stop, tell operator to revoke and reissue the token at https://app.termshelf.de/app/settings/api-tokens |
 | `transport.unreachable` | The MCP server could not reach the TermShelf host at all (DNS, TLS, port closed) | Stop. Surface the `base_url` from the body and ask the operator to verify `TERMSHELF_BASE_URL` and that the backoffice is reachable. Synthesized by the MCP server — no HTTP request landed. |
 
 ### 6. Stop before publishing
