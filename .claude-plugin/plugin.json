@@ -20,7 +20,9 @@
   "mcpServers": {
     "termshelf-author": {
       "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp-server/dist/index.mjs"]
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/mcp-server/dist/index.mjs"
+      ]
     }
   }
 }

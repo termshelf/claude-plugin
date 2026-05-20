@@ -7,11 +7,12 @@ description: Author brands, sites, domains, and per-locale variable / snippet ov
 
 You are helping an operator onboard a new brand or website into **TermShelf** — a Legal Content Operations system. You have an MCP server (`termshelf-author`) that lets you call the TermShelf external Management API directly. Your job is to:
 
-1. Discover the workspace's existing variables, snippets, and locales.
+1. Discover the workspace's existing variables, snippets, documents, and locales.
 2. Analyse the new brand's identity (legal entity, contact info, jurisdiction, brand voice).
 3. Propose a structured plan to the operator (entities to create + overrides to author).
 4. Execute the plan via MCP tools after explicit operator approval.
-5. **Stop before publishing.** Publication stays operator-driven, in the TermShelf customer-app.
+5. **Verify the result against the live preview**, iterating fixes until every (brand, locale) renders correctly.
+6. **Stop before publishing.** Publication stays operator-driven, in the TermShelf customer-app.
 
 ## What the MCP server exposes
 
@@ -23,6 +24,8 @@ When this skill is active, Claude Code has these MCP tools available under the `
 - `list_workspace_variables` — every `{{key}}` placeholder + `is_locale_agnostic` + `overrides_count`
 - `list_workspace_snippets` — reusable rich-text clauses, same shape
 - `list_locales` — the locale codes currently active in the workspace
+- `list_documents` — documents in the workspace (id, slug, title, document_type.code). Filter by `document_type_code` to narrow. Required input for `get_document_preview`.
+- `get_document_preview` — render a document as fully-resolved HTML for a `(brand_id, locale, market_code, site_profile_code)` tuple. Returns the same HTML the publish-time renderer would emit. Use this to **verify** override resolution after authoring — it surfaces `unresolved_variables`, `unresolved_snippets`, and the rendered text you can inspect for cross-locale leakage and placeholder stubs.
 
 **Writes (always confirm with the operator before calling):**
 - `create_brand`, `create_site`, `add_domain_to_site`, `attach_market_to_site`
@@ -66,8 +69,11 @@ In parallel, call:
 - `list_workspace_variables` — what placeholders exist? Note each variable's `key`, `is_locale_agnostic`, `description`, and `published_value`.
 - `list_workspace_snippets` — same shape, for reusable clauses.
 - `list_sites` — confirm the requested brand / site doesn't already exist (avoid duplicates).
+- `list_documents` — the documents this brand will serve (e.g. Datenschutzerklärung, Impressum, AGB). Record their `id` and `document_type.code` — you'll need both for the **Verify** step.
 
 You now know the full "shape" of the overrides the new brand will need. Locale-agnostic variables/snippets do not need per-locale overrides (the parent value carries everything); locale-aware ones do.
+
+**Workspace parent values are not language-policed.** A snippet whose `published_blocks` happen to be authored in German renders as German in every locale that has no override — including the English preview. The same is true in reverse. Treat "the parent already fits" as a *content* claim per (locale): a snippet with German parent body fits Termshelf's DE locale but not its EN locale, and vice versa. Plan overrides per (brand × locale × snippet), not per (brand × snippet).
 
 ### 3. Gather the brand profile
 
@@ -137,11 +143,37 @@ Surface each tool's result back briefly ("Brand Acme Legal created (id=42)") so 
 | `token.workspace_missing` | Token not bound to a workspace | Stop, tell operator to revoke and reissue the token at https://app.termshelf.de/app/settings/api-tokens |
 | `transport.unreachable` | The MCP server could not reach the TermShelf host at all (DNS, TLS, port closed) | Stop. Surface the `base_url` from the body and ask the operator to verify `TERMSHELF_BASE_URL` and that the backoffice is reachable. Synthesized by the MCP server — no HTTP request landed. |
 
-### 6. Stop before publishing
+### 6. Verify the result against the live preview
 
-When every override is in place, tell the operator:
+**This step is not optional.** Variable and snippet override correctness is invisible from the write responses alone — `create_*` returning 201 only proves persistence, not that the rendered document for this brand and locale looks right. The preview is the ground truth.
 
-> "All overrides created. Review them at <link-to-site-or-overrides-page-in-customer-app> and publish when you're satisfied."
+For **every** document the brand will publish (you discovered these via `list_documents` in step 2), and for **every** locale the brand supports (from `supported_locale_codes`), call:
+
+```
+get_document_preview(document_id=…, brand_id=…, locale=…)
+```
+
+Then inspect the response. Treat the loop below as authoritative — do not declare the workflow done until every (document, brand, locale) preview is **clean** on all three signals:
+
+1. **Unresolved variables** — `unresolved_variables` must be `[]`. If a key is listed, the variable has no resolution for this `(brand, locale)`. Decide why:
+   - If the workspace `published_value` is null on purpose (brand-specific by design, e.g. `brand.name`, `privacy_policy.contact_email`) → create the missing `create_variable_override(variable_id, brand_id, locale, value)`.
+   - If the variable should have a workspace default but doesn't → tell the operator; this is a workspace-level fix, not a brand-level one.
+2. **Unresolved snippets** — `unresolved_snippets` must be `[]`. A listed snippet id means the document references a snippet that resolved to nothing for this target. Almost always: the snippet exists but the override scope doesn't match → create `create_snippet_override` for `(brand_id, locale)`. If the id maps to a hard-deleted snippet, tell the operator — that's a workspace bug, not an override gap.
+3. **Rendered text quality** — read the `html`. Flag any of:
+   - **Cross-locale leakage.** The DE preview must read as German throughout; the EN preview must read as English throughout. If the rendered HTML of a `locale=de` preview contains an English block (the workspace parent of some snippet/variable was authored in English and no DE override exists), the brand needs a DE override for that snippet/variable. Same in reverse for `locale=en`. Common signals: function words like `the / and / for / with` in a DE preview, or `der / die / und / für / mit / nicht` in an EN preview.
+   - **Placeholder stubs surviving into the output.** Bare hyphens (`-`), token-style words like `ab`, `TODO`, `TBD`, `[Platzhalter…]`, `<!--`, or single-character "blocks" that look like authoring scaffolding rather than legal copy. These usually mean a workspace parent was never finished and the brand needs a real override.
+
+For each issue you detect, create the missing/corrected override (using the same write tools as step 5), then **re-run `get_document_preview` for the same `(document, brand, locale)`** and re-inspect. Keep iterating until all three signals are clean.
+
+You **must not** declare the workflow done while any preview still surfaces unresolved keys or fails the language / placeholder check. The operator opened this skill so that they don't have to do this inspection themselves — silently leaving locale leakage in the output is the worst-case failure mode for legal text.
+
+Summarize the final state once the loop converges: which `(document, brand, locale)` tuples were verified and which additional overrides were created during verification.
+
+### 7. Stop before publishing
+
+When every override is in place AND every preview is clean, tell the operator:
+
+> "All overrides created and verified — every `(document, brand, locale)` preview renders cleanly. Review them at <link-to-site-or-overrides-page-in-customer-app> and publish when you're satisfied."
 
 You do **not** call any publish endpoint. The token deliberately lacks `publish:trigger`. Publishing requires the operator's eyes on the diff.
 
@@ -160,3 +192,4 @@ You do **not** call any publish endpoint. The token deliberately lacks `publish:
 - **Ask once** before executing the proposed plan. Don't ask per-call; the operator approves the batch.
 - **Assume** locales come from `list_locales` — never invent a locale that isn't in the workspace.
 - **Assume** translations follow the source locale's tone. If the operator's brief is in German and you need an English translation, produce one and include it in the proposal so the operator can correct before it goes in.
+- **Assume the preview is ground truth.** During the Verify step, do not trust your prior planning — re-read every preview and act on what's actually there. A snippet whose parent looked German-enough in `list_workspace_snippets` may still render English in the EN preview (or vice versa), because the parent values are not language-policed.

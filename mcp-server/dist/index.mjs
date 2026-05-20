@@ -21202,7 +21202,7 @@ var idempotencyInput = {
 };
 var server = new McpServer({
   name: "termshelf",
-  version: "0.1.0"
+  version: "0.3.0"
 });
 server.tool(
   "whoami",
@@ -21281,6 +21281,55 @@ server.tool(
   "List every locale code currently in use in the workspace \u2014 the union of the workspace's default_locale_code and every site's supported_locale_codes. Each entry flags whether it is the workspace default.",
   {},
   async () => asToolResult(await callManagement("GET", "/locales"))
+);
+server.tool(
+  "list_documents",
+  "List documents in the active workspace (id, slug, title, document_type code+label, locales). Use this to find the document_id you need for get_document_preview \u2014 e.g. the workspace's privacy-policy document. Paginated; supports filtering by document_type_code.",
+  {
+    document_type_code: external_exports.string().max(64).optional().describe(
+      "Filter to documents whose document_type.code matches exactly, e.g. 'privacy' or 'imprint'."
+    ),
+    status: external_exports.enum(["draft", "archived"]).optional().describe("Filter by document status."),
+    ...paginationInput
+  },
+  async ({ document_type_code, status, page, per_page }) => {
+    const params = new URLSearchParams();
+    if (document_type_code) params.set("document_type_code", document_type_code);
+    if (status) params.set("status", status);
+    if (page) params.set("page", String(page));
+    if (per_page) params.set("per_page", String(per_page));
+    const qs = params.toString();
+    return asToolResult(
+      await callManagement("GET", `/documents${qs ? `?${qs}` : ""}`)
+    );
+  }
+);
+server.tool(
+  "get_document_preview",
+  "Render a document as fully-resolved HTML for a (brand, locale, market, profile) target \u2014 the same Vorschau the customer-app's authoring tab shows. Use this AFTER creating variable/snippet overrides to verify they resolve correctly per (brand, locale): inspect `html` for cross-locale leakage and obvious placeholders, and `unresolved_variables` / `unresolved_snippets` for publish blockers. Omit a target axis to fall back to the workspace default for that axis.",
+  {
+    document_id: external_exports.number().int().positive().describe("Document row ID (see list_documents)."),
+    brand_id: external_exports.number().int().positive().optional().describe(
+      "Brand to resolve overrides against. Required to verify per-brand overrides created via create_variable_override / create_snippet_override."
+    ),
+    locale: external_exports.string().max(32).optional().describe("BCP-47-like locale tag, e.g. de or en-GB."),
+    market_code: external_exports.string().max(16).optional().describe("Market code (must already exist in the workspace)."),
+    site_profile_code: external_exports.string().max(64).optional().describe("Site profile code (must already exist in the workspace).")
+  },
+  async ({ document_id, brand_id, locale, market_code, site_profile_code }) => {
+    const params = new URLSearchParams();
+    if (brand_id !== void 0) params.set("brand_id", String(brand_id));
+    if (locale) params.set("locale", locale);
+    if (market_code) params.set("market_code", market_code);
+    if (site_profile_code) params.set("site_profile_code", site_profile_code);
+    const qs = params.toString();
+    return asToolResult(
+      await callManagement(
+        "GET",
+        `/documents/${document_id}/preview${qs ? `?${qs}` : ""}`
+      )
+    );
+  }
 );
 server.tool(
   "create_brand",

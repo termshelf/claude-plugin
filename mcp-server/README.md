@@ -43,6 +43,8 @@ The plugin manifest at `.claude-plugin/plugin.json` registers this server under 
 | `list_workspace_variables` | List variables with `is_locale_agnostic`, `published_value`, `overrides_count` | `content:read` |
 | `list_workspace_snippets` | List snippets with `published_blocks`, `overrides_count` | `content:read` |
 | `list_locales` | List every locale in active use in the workspace | `content:read` |
+| `list_documents` | List documents (id, slug, title, `document_type.code`); filter by `document_type_code` | `content:read` |
+| `get_document_preview` | Render a document for a `(brand_id, locale, market_code, site_profile_code)` target. Returns the resolved HTML plus `unresolved_variables` / `unresolved_snippets`. Use this to verify overrides before publishing. | `content:read` |
 
 ### Writes
 
