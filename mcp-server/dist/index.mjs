@@ -21202,7 +21202,7 @@ var idempotencyInput = {
 };
 var server = new McpServer({
   name: "termshelf",
-  version: "0.4.0"
+  version: "0.5.0"
 });
 server.tool(
   "whoami",
@@ -21450,6 +21450,294 @@ server.tool(
         idempotencyKey: idempotency_key
       }
     )
+  )
+);
+server.tool(
+  "list_snippet_overrides",
+  "List per-axis overrides for a given snippet. Returns the override row IDs you need before calling update_snippet_override / archive_snippet_override.",
+  {
+    snippet_id: external_exports.number().int().positive(),
+    include_archived: external_exports.boolean().optional().describe("Include archived overrides. Defaults to true on this endpoint."),
+    ...paginationInput
+  },
+  async ({ snippet_id, include_archived, page, per_page }) => {
+    const params = new URLSearchParams();
+    if (include_archived !== void 0) {
+      params.set("include_archived", include_archived ? "1" : "0");
+    }
+    if (page !== void 0) params.set("page", String(page));
+    if (per_page !== void 0) params.set("per_page", String(per_page));
+    const query = params.toString();
+    return asToolResult(
+      await callManagement(
+        "GET",
+        `/workspace-snippets/${snippet_id}/overrides${query ? `?${query}` : ""}`
+      )
+    );
+  }
+);
+server.tool(
+  "get_snippet_override",
+  "Fetch a single snippet override by ID, including its working_blocks draft.",
+  {
+    snippet_id: external_exports.number().int().positive(),
+    override_id: external_exports.number().int().positive()
+  },
+  async ({ snippet_id, override_id }) => asToolResult(
+    await callManagement(
+      "GET",
+      `/workspace-snippets/${snippet_id}/overrides/${override_id}`
+    )
+  )
+);
+server.tool(
+  "update_snippet_override",
+  "Edit an existing snippet override's working_blocks draft. Send the full block list \u2014 the action replaces working_blocks, it does not patch individual blocks. Pass working_blocks=[] to clear the draft (the snippet then falls back to a less-specific override or the parent at render time).",
+  {
+    snippet_id: external_exports.number().int().positive(),
+    override_id: external_exports.number().int().positive(),
+    working_blocks: external_exports.array(external_exports.record(external_exports.string(), external_exports.unknown())).describe(
+      "Replacement rich-text block list. Same shape as create_snippet_override.blocks."
+    ),
+    ...idempotencyInput
+  },
+  async ({ snippet_id, override_id, working_blocks, idempotency_key }) => asToolResult(
+    await callManagement(
+      "PATCH",
+      `/workspace-snippets/${snippet_id}/overrides/${override_id}`,
+      {
+        body: { working_blocks },
+        idempotencyKey: idempotency_key
+      }
+    )
+  )
+);
+server.tool(
+  "archive_snippet_override",
+  "Archive a snippet override. Soft-delete: sets archived_at. The override stops resolving but the row stays so it can be restored. A body-less snippet keeps its last live override (the action rejects archiving the last sibling).",
+  {
+    snippet_id: external_exports.number().int().positive(),
+    override_id: external_exports.number().int().positive(),
+    ...idempotencyInput
+  },
+  async ({ snippet_id, override_id, idempotency_key }) => asToolResult(
+    await callManagement(
+      "POST",
+      `/workspace-snippets/${snippet_id}/overrides/${override_id}/archive`,
+      { body: {}, idempotencyKey: idempotency_key }
+    )
+  )
+);
+server.tool(
+  "restore_snippet_override",
+  "Restore a previously archived snippet override. Rejected with override.ambiguous if the restored row would tie with another live override on the same axis tuple \u2014 narrow with another axis (market / profile) and try again.",
+  {
+    snippet_id: external_exports.number().int().positive(),
+    override_id: external_exports.number().int().positive(),
+    ...idempotencyInput
+  },
+  async ({ snippet_id, override_id, idempotency_key }) => asToolResult(
+    await callManagement(
+      "POST",
+      `/workspace-snippets/${snippet_id}/overrides/${override_id}/restore`,
+      { body: {}, idempotencyKey: idempotency_key }
+    )
+  )
+);
+server.tool(
+  "list_variable_overrides",
+  "List per-axis overrides for a given variable. Returns the override row IDs you need before calling update_variable_override / delete_variable_override.",
+  {
+    variable_id: external_exports.number().int().positive(),
+    ...paginationInput
+  },
+  async ({ variable_id, page, per_page }) => {
+    const params = new URLSearchParams();
+    if (page !== void 0) params.set("page", String(page));
+    if (per_page !== void 0) params.set("per_page", String(per_page));
+    const query = params.toString();
+    return asToolResult(
+      await callManagement(
+        "GET",
+        `/workspace-variables/${variable_id}/overrides${query ? `?${query}` : ""}`
+      )
+    );
+  }
+);
+server.tool(
+  "get_variable_override",
+  "Fetch a single variable override by ID.",
+  {
+    variable_id: external_exports.number().int().positive(),
+    override_id: external_exports.number().int().positive()
+  },
+  async ({ variable_id, override_id }) => asToolResult(
+    await callManagement(
+      "GET",
+      `/workspace-variables/${variable_id}/overrides/${override_id}`
+    )
+  )
+);
+server.tool(
+  "update_variable_override",
+  "Edit an existing variable override's value. Plain string, max 1024 chars, no nested {{key}} tokens.",
+  {
+    variable_id: external_exports.number().int().positive(),
+    override_id: external_exports.number().int().positive(),
+    value: external_exports.string().max(1024),
+    ...idempotencyInput
+  },
+  async ({ variable_id, override_id, value, idempotency_key }) => asToolResult(
+    await callManagement(
+      "PATCH",
+      `/workspace-variables/${variable_id}/overrides/${override_id}`,
+      { body: { value }, idempotencyKey: idempotency_key }
+    )
+  )
+);
+server.tool(
+  "delete_variable_override",
+  "Hard-delete a variable override. Rejected with resource.conflict if this is the last override and the parent variable has no default value.",
+  {
+    variable_id: external_exports.number().int().positive(),
+    override_id: external_exports.number().int().positive(),
+    ...idempotencyInput
+  },
+  async ({ variable_id, override_id, idempotency_key }) => asToolResult(
+    await callManagement(
+      "DELETE",
+      `/workspace-variables/${variable_id}/overrides/${override_id}`,
+      { idempotencyKey: idempotency_key }
+    )
+  )
+);
+server.tool(
+  "get_workspace_snippet",
+  "Fetch a workspace snippet by ID, including working_blocks and the last-published version.",
+  { snippet_id: external_exports.number().int().positive() },
+  async ({ snippet_id }) => asToolResult(
+    await callManagement("GET", `/workspace-snippets/${snippet_id}`)
+  )
+);
+server.tool(
+  "create_workspace_snippet",
+  "Create a new workspace snippet. Requires the `content:write` token ability. Optional working_blocks seeds the draft; omit to start with an empty draft.",
+  {
+    key: external_exports.string().min(1).max(64).describe("Workspace-unique key, referenced from document blocks."),
+    title: external_exports.string().min(1).max(255),
+    description: external_exports.string().max(500).optional(),
+    is_locale_agnostic: external_exports.boolean().optional(),
+    working_blocks: external_exports.array(external_exports.record(external_exports.string(), external_exports.unknown())).optional().describe("Initial rich-text draft."),
+    ...idempotencyInput
+  },
+  async ({ idempotency_key, ...body }) => asToolResult(
+    await callManagement("POST", `/workspace-snippets`, {
+      body,
+      idempotencyKey: idempotency_key
+    })
+  )
+);
+server.tool(
+  "update_workspace_snippet",
+  "Edit a workspace snippet's title, description, working_blocks draft, or is_locale_agnostic flag. Omitted fields are left untouched. Pass description=null to clear it. Requires `content:write`.",
+  {
+    snippet_id: external_exports.number().int().positive(),
+    title: external_exports.string().min(1).max(255).optional(),
+    description: external_exports.string().max(500).nullable().optional(),
+    is_locale_agnostic: external_exports.boolean().optional(),
+    working_blocks: external_exports.array(external_exports.record(external_exports.string(), external_exports.unknown())).optional(),
+    ...idempotencyInput
+  },
+  async ({ snippet_id, idempotency_key, ...body }) => asToolResult(
+    await callManagement("PATCH", `/workspace-snippets/${snippet_id}`, {
+      body,
+      idempotencyKey: idempotency_key
+    })
+  )
+);
+server.tool(
+  "archive_workspace_snippet",
+  "Archive a workspace snippet. Soft-delete: rejected with snippet_in_use (409) if any active document still references it. Requires `content:write`.",
+  {
+    snippet_id: external_exports.number().int().positive(),
+    ...idempotencyInput
+  },
+  async ({ snippet_id, idempotency_key }) => asToolResult(
+    await callManagement(
+      "POST",
+      `/workspace-snippets/${snippet_id}/archive`,
+      { body: {}, idempotencyKey: idempotency_key }
+    )
+  )
+);
+server.tool(
+  "restore_workspace_snippet",
+  "Restore a previously archived workspace snippet. Requires `content:write`.",
+  {
+    snippet_id: external_exports.number().int().positive(),
+    ...idempotencyInput
+  },
+  async ({ snippet_id, idempotency_key }) => asToolResult(
+    await callManagement(
+      "POST",
+      `/workspace-snippets/${snippet_id}/restore`,
+      { body: {}, idempotencyKey: idempotency_key }
+    )
+  )
+);
+server.tool(
+  "get_workspace_variable",
+  "Fetch a workspace variable by ID, including the live draft `value` and the last-published value.",
+  { variable_id: external_exports.number().int().positive() },
+  async ({ variable_id }) => asToolResult(
+    await callManagement("GET", `/workspace-variables/${variable_id}`)
+  )
+);
+server.tool(
+  "create_workspace_variable",
+  "Create a new workspace variable. Requires `content:write`. `value` is the workspace default; if omitted, callers must supply at least one override later (the resolver refuses to render a variable that has no value anywhere).",
+  {
+    key: external_exports.string().min(1).max(64).describe("Workspace-unique key, referenced from blocks as `{{key}}`."),
+    value: external_exports.string().max(1024).optional(),
+    description: external_exports.string().max(255).optional(),
+    is_locale_agnostic: external_exports.boolean().optional(),
+    ...idempotencyInput
+  },
+  async ({ idempotency_key, ...body }) => asToolResult(
+    await callManagement("POST", `/workspace-variables`, {
+      body,
+      idempotencyKey: idempotency_key
+    })
+  )
+);
+server.tool(
+  "update_workspace_variable",
+  "Edit a workspace variable's value, description, or is_locale_agnostic flag. Omitted fields are left untouched. Pass value=null to clear the default (only allowed when at least one override exists); pass description=null to clear the description. Requires `content:write`.",
+  {
+    variable_id: external_exports.number().int().positive(),
+    value: external_exports.string().max(1024).nullable().optional(),
+    description: external_exports.string().max(255).nullable().optional(),
+    is_locale_agnostic: external_exports.boolean().optional(),
+    ...idempotencyInput
+  },
+  async ({ variable_id, idempotency_key, ...body }) => asToolResult(
+    await callManagement("PATCH", `/workspace-variables/${variable_id}`, {
+      body,
+      idempotencyKey: idempotency_key
+    })
+  )
+);
+server.tool(
+  "delete_workspace_variable",
+  "Hard-delete a workspace variable. Rejected with variable_in_use (409) if any active document still references the `{{key}}`. Requires `content:write`.",
+  {
+    variable_id: external_exports.number().int().positive(),
+    ...idempotencyInput
+  },
+  async ({ variable_id, idempotency_key }) => asToolResult(
+    await callManagement("DELETE", `/workspace-variables/${variable_id}`, {
+      idempotencyKey: idempotency_key
+    })
   )
 );
 async function main() {
