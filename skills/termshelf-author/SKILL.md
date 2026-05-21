@@ -1,15 +1,15 @@
 ---
 name: termshelf-author
-description: Author brands, sites, domains, and per-locale variable / snippet overrides in TermShelf via the external Management API. Use this when the user wants to onboard a new brand or website into TermShelf — typically phrased as "set up Acme as a new brand", "create a TermShelf site for our DE store", "add overrides for the X variable across locales", or "do the legal-text rollout for our new website". DO NOT use this for read-only integration code generation (that's the `termshelf` skill, Tier 1).
+description: Author brands, sites, domains, document types, documents (with sections and blocks), and per-locale variable / snippet overrides in TermShelf via the external Management API. Use this when the user wants to onboard a new brand or website into TermShelf — typically phrased as "set up Acme as a new brand", "create a TermShelf site for our DE store", "add overrides for the X variable across locales", "do the legal-text rollout for our new website", or "draft a privacy policy document with these snippets". DO NOT use this for read-only integration code generation (that's the `termshelf` skill, Tier 1).
 ---
 
-# Authoring TermShelf brands, sites & overrides
+# Authoring TermShelf brands, sites, documents & overrides
 
 You are helping an operator onboard a new brand or website into **TermShelf** — a Legal Content Operations system. You have an MCP server (`termshelf-author`) that lets you call the TermShelf external Management API directly. Your job is to:
 
-1. Discover the workspace's existing variables, snippets, documents, and locales.
-2. Analyse the new brand's identity (legal entity, contact info, jurisdiction, brand voice).
-3. Propose a structured plan to the operator (entities to create + overrides to author).
+1. Discover the workspace's existing variables, snippets, documents, document types, and locales.
+2. Analyse the new brand's identity (legal entity, contact info, jurisdiction, brand voice) — and/or the requested document's structure when the operator is drafting a document.
+3. Propose a structured plan to the operator (entities to create + overrides to author + documents to draft).
 4. Execute the plan via MCP tools after explicit operator approval.
 5. **Verify the result against the live preview**, iterating fixes until every (brand, locale) renders correctly.
 6. **Stop before publishing.** Publication stays operator-driven, in the TermShelf customer-app.
@@ -24,7 +24,9 @@ When this skill is active, Claude Code has these MCP tools available under the `
 - `list_workspace_variables`, `get_workspace_variable` — every `{{key}}` placeholder + `is_locale_agnostic` + `overrides_count` + the live draft `value` and the last-published value + `has_unpublished_changes` (true iff the draft would actually persist a new version on publish)
 - `list_workspace_snippets`, `get_workspace_snippet` — reusable rich-text clauses + `working_blocks` (draft) + `published_blocks` + `has_unpublished_changes`
 - `list_locales` — the locale codes currently active in the workspace
-- `list_documents` — documents in the workspace (id, slug, title, document_type.code). Filter by `document_type_code` to narrow. Required input for `get_document_preview`.
+- `list_documents`, `get_document` — documents in the workspace. `list_documents` returns the index (id, slug, title, document_type.code); filter by `document_type_code` to narrow. `get_document` returns the full structured tree (sections with their ordered blocks) for a single document.
+- `list_document_types`, `get_document_type` — taxonomy entries a document attaches to (`privacy`, `imprint`, `terms`, …). Use these BEFORE `create_document` to pick the `document_type_id` / `document_type_code` to pass.
+- `list_document_sections`, `list_document_blocks` — direct access to a document's structural children, ordered by position.
 - `list_snippet_overrides`, `get_snippet_override` — existing snippet-override rows scoped to a snippet, with their working_blocks draft and `has_unpublished_changes`. Use this to fetch an override ID before updating or archiving it.
 - `list_variable_overrides`, `get_variable_override` — same shape for variable overrides; also carries `has_unpublished_changes`.
 - `get_document_preview` — render a document as fully-resolved HTML for a `(brand_id, locale, market_code, site_profile_code)` tuple. Resolves from the **draft working tree** (working_blocks of overrides + working_blocks of snippets + draft variable values), so changes made via the write tools below show up immediately — no publish step required. Use this to **verify** override resolution after authoring; surfaces `unresolved_variables`, `unresolved_snippets`, and the rendered text you can inspect for cross-locale leakage and placeholder stubs.
@@ -39,6 +41,11 @@ The `has_unpublished_changes` flag is true when the draft would actually persist
 **Workspace-level writes** (require the `content:write` ability — confirm with the operator before calling):
 - `create_workspace_snippet`, `update_workspace_snippet`, `archive_workspace_snippet`, `restore_workspace_snippet`
 - `create_workspace_variable`, `update_workspace_variable`, `delete_workspace_variable`
+- `create_document_type`, `update_document_type`, `activate_document_type`, `deactivate_document_type` — the taxonomy a document attaches to. The `code` is immutable once persisted.
+- `create_document`, `update_document`, `archive_document`, `restore_document`, `delete_document` — the document row itself. `create_document` only stages the document; sections and blocks are authored separately. `delete_document` is rejected when publications / active reviews / pending patches still reference the document — archive instead in that case.
+- `add_document_locale`, `remove_document_locale` — translation lifecycle. The default locale cannot be removed.
+- `upsert_document_section`, `delete_document_section`, `reorder_document_sections` — the structural skeleton of a document. Sections are upserted by stable `key`; the `key` is immutable.
+- `upsert_document_block`, `delete_document_block`, `reorder_document_blocks` — typed content units inside a section (`heading`, `paragraph`, `list`, `note`, `table`, `image`, `snippet_reference`). Variable references like `{{key}}` inside text are validated against the workspace's variables; `snippet_reference` payloads must point to a **published** snippet.
 
 Every write tool accepts an optional `idempotency_key`. Use it when retrying a previously failed write so the server replays the original response inside its 24h window.
 
@@ -68,7 +75,7 @@ Always call `whoami` first, exactly once at the start. It tells you:
 - which workspace you're operating on
 - which abilities the active token has
 
-If any abilities you need are missing, stop and tell the operator. Required abilities by task: `content:read` for any discovery; `structure:write` for brand/site/domain/market creation; `overrides:write` for override CRUD; `content:write` only when authoring workspace-level snippets/variables (not needed for the common per-brand override flow). They issue a new token with the right scopes at [Settings → API Tokens](https://app.termshelf.de/app/settings/api-tokens); you do not negotiate around missing ones.
+If any abilities you need are missing, stop and tell the operator. Required abilities by task: `content:read` for any discovery; `structure:write` for brand/site/domain/market creation; `overrides:write` for override CRUD; `content:write` for authoring workspace-level snippets/variables AND for creating/editing documents, document types, sections, and blocks (every endpoint under the document-drafting workflow). They issue a new token with the right scopes at [Settings → API Tokens](https://app.termshelf.de/app/settings/api-tokens); you do not negotiate around missing ones.
 
 ### 2. Discover
 
@@ -176,6 +183,113 @@ For each issue you detect, create the missing/corrected override (using the same
 You **must not** declare the workflow done while any preview still surfaces unresolved keys or fails the language / placeholder check. The operator opened this skill so that they don't have to do this inspection themselves — silently leaving locale leakage in the output is the worst-case failure mode for legal text.
 
 Summarize the final state once the loop converges: which `(document, brand, locale)` tuples were verified and which additional overrides were created during verification.
+
+## The document-drafting workflow
+
+When the operator asks for **a new document** (not a brand) — e.g. "draft a privacy policy with this and that snippet", "create a withdrawal-notice document populated from the existing snippets", "set up an imprint for the new German site" — switch to this flow. It overlaps with the brand-onboarding flow but is structured around the document tree rather than around overrides.
+
+### A. Confirm context
+
+Same as the brand flow: `whoami` once at the start. You need `content:read` and `content:write` for this flow.
+
+### B. Discover
+
+In parallel:
+- `list_document_types` — to pick the type the new document attaches to. If the requested document type does not exist (`privacy`, `imprint`, `terms`, …), surface this to the operator BEFORE drafting; the type drives the public delivery URL and the taxonomy that later epics (rule packs, applicability) bind to.
+- `list_documents` filtered by `document_type_code` — to check whether a document already exists. If one already exists, ask the operator whether to edit the existing draft or create a sibling under a different slug.
+- `list_workspace_snippets` — every snippet the operator can reference via `snippet_reference` blocks. Note the `key`, `id`, `title`, `is_locale_agnostic`, and **whether it's published** (`published_blocks` is non-null). `snippet_reference` blocks can only point to published snippets.
+- `list_workspace_variables` — every `{{key}}` placeholder that may appear inside `heading` / `paragraph` / `list` / `note` / `table` cells. The block payload validator rejects references to unknown keys.
+- `list_locales` — the locale codes the workspace operates in. The document's `supported_locale_codes` defaults from the linked site (if any) or workspace default; you can override at create time, but every entry has to exist in the workspace.
+
+### C. Propose a plan
+
+Render a structured proposal back to the operator before any write. Example shape:
+
+```
+## Document draft plan — "Privacy Policy" (type=privacy)
+
+### Document
+| Field | Value |
+|---|---|
+| document_type_code | privacy |
+| title | Datenschutzerklärung |
+| slug | datenschutz (auto from title; will be unique per type) |
+| supported_locale_codes | [de, en] |
+| default_locale_code | de |
+| brand_id | 42 (Acme Legal) |
+
+### Structure (sections, in order)
+| # | key | title | What goes inside |
+|---|---|---|---|
+| 1 | intro | Einleitung | heading + 1 paragraph |
+| 2 | controller | Verantwortlicher | heading + paragraph referencing {{company_name}} + {{contact_email}} |
+| 3 | rights | Rechte der Betroffenen | heading + reference to snippet `gdpr_rights_clause` |
+| 4 | contact | Kontakt | heading + paragraph with {{support_email}} |
+
+### Snippet references
+| Section | Snippet key | Snippet id | Notes |
+|---|---|---|---|
+| rights | gdpr_rights_clause | 17 | already published; renders the standard GDPR rights list |
+
+### Variable references (will be validated at write time)
+- company_name, contact_email, support_email — must exist in the workspace; if any is missing, fall back to literal text and tell the operator to add the workspace variable first.
+```
+
+Then ask: "Approve? (y/N)" — and wait.
+
+### D. Execute
+
+Once approved, run the writes **in order**:
+
+1. **Pre-flight the dependencies**:
+   - Any unknown variable `{{key}}` referenced in the draft → either ask the operator to create them (`create_workspace_variable`), or rewrite the offending text to avoid the reference. Do not silently invent a workspace variable.
+   - Any snippet referenced by id that isn't published → tell the operator; refuse to insert the `snippet_reference` until they publish it via the customer-app. (`create_workspace_snippet` + `update_workspace_snippet` build a draft, but only the customer-app's publish step makes it referenceable.)
+   - If the requested `document_type_code` is missing → ask the operator if they want it created (`create_document_type`). Defaulting silently is wrong here: the type is part of the public URL.
+
+2. **Create the document shell** with `create_document`. Pass `document_type_id` (preferred — you got it from `list_document_types`) or `document_type_code`. The action only creates the row + lifecycle status; sections and blocks come next.
+
+3. **Add sections** with `upsert_document_section`, one per section in the proposed order. New sections append at the end, so calling them in the proposal's order Just Works for the initial create. (If you need to author them out of order, call them in any order and then `reorder_document_sections` with the full ordered key list.)
+
+4. **Fill each section with blocks** via `upsert_document_block`. Pass `kind` + the kind-specific `payload`:
+   - `heading` → `{ text, level?: 1-6 (default 2) }`. Use `level: 2` for section headings, `level: 3` for sub-headings.
+   - `paragraph` → `{ text }`. Variable references are `{{key}}` literal strings inside text — the renderer substitutes them at publish time.
+   - `list` → `{ items: [string, …], style?: 'bullet' | 'ordered' }`.
+   - `note` → `{ text, severity?: 'info' | 'warning' }`. Useful for operator remarks the publisher should see, e.g. "TODO: confirm processor list".
+   - `table` → `{ rows: [[cell, …], …], header?: bool }`. Cells are single-line strings. Every row must have the same column count.
+   - `image` → `{ src: absolute http(s) URL, alt?, title? }`. Image bytes are not stored — only URLs.
+   - `snippet_reference` → `{ snippet_id }`. Renders the published snippet inline. The snippet must be published; the block carries no body of its own.
+
+   Each block also needs a stable `key` unique within the document (2–64 chars, must start with a letter, only a-z / 0-9 / underscore / hyphen). Pick semantic keys (`intro_p1`, `rights_ref`) — they show up in audit events and variant overrides bind to them.
+
+5. **Re-order if needed**. If you authored blocks/sections out of the operator's intended order, call `reorder_document_blocks` / `reorder_document_sections` with the full ordered key list.
+
+6. **Add additional locales** with `add_document_locale` once per non-default locale. The server deep-copies the default-locale text into each new locale's translation slot — the operator then translates inside the customer-app (locale-by-locale text edits are NOT exposed via this surface; the editor lives in the SPA). When the workflow is purely structural (e.g. one locale only), skip this step.
+
+7. **Cross-link with the brand-onboarding flow** if applicable. If you just created the document AND the operator is onboarding a brand at the same time, run the **Verify** loop below for the new document under the new brand's `(brand, locale)` tuples. Otherwise verify against the document's `default_locale_code` only.
+
+### E. Verify against the live preview
+
+Same loop as step 6 of the brand flow, but scoped to the new document. For each `(locale ∈ supported_locale_codes)` (and each `brand_id` if a brand-onboarding is in flight), call:
+
+```
+get_document_preview(document_id=<the new id>, locale=…, brand_id=…)
+```
+
+Inspect `unresolved_variables`, `unresolved_snippets`, and the rendered `html`. Fix every issue by patching the block payload (`upsert_document_block` again with the same `key` — that's an update) or by creating the missing variable/snippet overrides. Keep iterating until the preview is clean.
+
+### F. Stop before publishing
+
+When the document tree is in place and every preview is clean, tell the operator the document ID + the link to the customer-app's authoring view, and ask them to publish. **Do not publish.**
+
+### Editing an existing document
+
+If the operator asks for an edit (not a new document), the same primitives apply:
+- `get_document(document_id)` → see the current tree.
+- `upsert_document_section` / `upsert_document_block` by the existing `key` → updates that row in place.
+- `delete_document_section` / `delete_document_block` → removes; positions are repacked.
+- `update_document` → metadata-only edits (title, summary, scope, document_type_id).
+
+Do not mutate keys — the keys are addressing identifiers, and variant overrides reference them. If a key is wrong, delete the row and create a new one with the correct key. Surface this to the operator before executing.
 
 ### 7. Stop before publishing
 

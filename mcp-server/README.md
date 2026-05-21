@@ -16,10 +16,11 @@ Two environment variables drive it:
 
 Token scopes you'll usually want for the author skill:
 
-- `content:read` — reads variables, snippets, locales
+- `content:read` — reads variables, snippets, locales, documents, document types
 - `structure:read` — reads sites
 - `structure:write` — creates brands, sites, domains, markets
 - `overrides:write` — creates variable + snippet overrides
+- `content:write` — creates / edits workspace snippets + variables, document types, documents, sections, and blocks
 
 The token should NOT include `publish:trigger` for the author skill — publishing stays operator-driven.
 
@@ -44,7 +45,11 @@ The plugin manifest at `.claude-plugin/plugin.json` registers this server under 
 | `list_workspace_snippets` | List snippets with `published_blocks`, `overrides_count` | `content:read` |
 | `list_locales` | List every locale in active use in the workspace | `content:read` |
 | `list_documents` | List documents (id, slug, title, `document_type.code`); filter by `document_type_code` | `content:read` |
+| `get_document` | Fetch a single document by ID, including the full structured tree (sections + ordered blocks) | `content:read` |
+| `list_document_types`, `get_document_type` | Discover the taxonomy a document attaches to (`privacy`, `imprint`, `terms`, …) | `content:read` |
+| `list_document_sections`, `list_document_blocks` | Direct list endpoints for a document's structural children | `content:read` |
 | `get_document_preview` | Render a document for a `(brand_id, locale, market_code, site_profile_code)` target. Returns the resolved HTML plus `unresolved_variables` / `unresolved_snippets`. Use this to verify overrides before publishing. | `content:read` |
+| `list_document_unpublished_refs` | Pre-publish cascade discovery: which referenced snippets/variables/overrides have unpublished drafts for the given publication targets | `content:read` |
 
 ### Writes
 
@@ -56,8 +61,15 @@ All write tools accept an optional `idempotency_key` parameter that forwards to 
 | `create_site` | Create a site linked to an existing brand | `structure:write` |
 | `add_domain_to_site` | Attach a hostname (optionally primary) to a site | `structure:write` |
 | `attach_market_to_site` | Attach an existing market to a site | `structure:write` |
-| `create_variable_override` | Per-locale override for a workspace variable | `overrides:write` |
-| `create_snippet_override` | Per-locale override for a workspace snippet | `overrides:write` |
+| `create_variable_override`, `update_variable_override`, `delete_variable_override` | Per-locale value overrides for a workspace variable | `overrides:write` |
+| `create_snippet_override`, `update_snippet_override`, `archive_snippet_override`, `restore_snippet_override` | Per-locale rich-text overrides for a workspace snippet | `overrides:write` |
+| `create_workspace_variable`, `update_workspace_variable`, `delete_workspace_variable` | Workspace-level variable CRUD | `content:write` |
+| `create_workspace_snippet`, `update_workspace_snippet`, `archive_workspace_snippet`, `restore_workspace_snippet` | Workspace-level snippet CRUD | `content:write` |
+| `create_document_type`, `update_document_type`, `activate_document_type`, `deactivate_document_type` | Document-type taxonomy CRUD | `content:write` |
+| `create_document`, `update_document`, `archive_document`, `restore_document`, `delete_document` | Document row CRUD (the section/block tree is authored separately) | `content:write` |
+| `add_document_locale`, `remove_document_locale` | Translation lifecycle. The default locale cannot be removed. | `content:write` |
+| `upsert_document_section`, `delete_document_section`, `reorder_document_sections` | Document section CRUD (upsert by stable `key`) | `content:write` |
+| `upsert_document_block`, `delete_document_block`, `reorder_document_blocks` | Document block CRUD — kinds `heading`, `paragraph`, `list`, `note`, `table`, `image`, `snippet_reference`; `snippet_reference` requires a published snippet | `content:write` |
 
 ### Closed-set error envelope
 

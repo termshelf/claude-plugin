@@ -5,7 +5,7 @@ Two skills for working with [TermShelf](https://termshelf.de), a Legal Content O
 | Skill | Audience | What it does |
 |---|---|---|
 | `termshelf`        | **Developers** | Generate read-only integration code (Next.js / Astro / Express / Laravel / …) that consumes already-published legal texts via the TermShelf Public Delivery API. No credentials needed. |
-| `termshelf-author` | **Operators**  | Drive a brand-onboarding workflow end-to-end against the TermShelf Management API — create brands, sites, domains, and per-locale variable / snippet overrides via an MCP server. Requires a token. **Stops before publishing.** |
+| `termshelf-author` | **Operators**  | Drive a brand-onboarding or document-drafting workflow end-to-end against the TermShelf Management API — create brands, sites, domains, document types, full documents (sections + blocks with snippet references), and per-locale variable / snippet overrides via an MCP server. Requires a token. **Stops before publishing.** |
 
 ## Install
 
@@ -65,11 +65,12 @@ Then issue a Management API token in the customer-app (**Settings → API Tokens
 | Scope | What it grants |
 |---|---|
 | `structure:read`   | List sites + their domains, markets, profiles |
-| `content:read`     | List workspace variables, snippets, locales |
+| `content:read`     | List workspace variables, snippets, locales, documents, document types |
 | `structure:write`  | Create brands, sites, domains, attach markets |
 | `overrides:write`  | Create per-locale variable and snippet overrides |
+| `content:write`    | Create / edit workspace snippets + variables, document types, full documents (sections + blocks) |
 
-For the typical brand-onboarding workflow, all four. **Do NOT** include `publish:trigger` — publishing stays in your hands inside the customer-app.
+For the typical brand-onboarding workflow, the first four. For drafting whole documents, add `content:write`. **Do NOT** include `publish:trigger` — publishing stays in your hands inside the customer-app.
 
 Export the token before launching Claude Code:
 
@@ -83,20 +84,30 @@ The MCP server reads the token from the environment and **never** echoes it. If 
 
 ### Use
 
+Two flavours of prompt are supported:
+
 ```text
 Onboard "Acme Legal GmbH" (https://acme.de) as a new brand under my workspace.
 Create the site, domain, and the per-locale variable + snippet overrides
 needed for the documents we already have. Stop before publishing.
 ```
 
+```text
+Draft a Datenschutzerklärung document of type "privacy" for the Acme brand.
+Use our existing gdpr_rights_clause snippet for the "Rechte der Betroffenen"
+section and pull company_name + contact_email from variables. Stop before
+publishing.
+```
+
 Claude will:
 
-1. Discover existing variables / snippets / locales in your workspace.
-2. Fetch the brand's website and (if needed) ask you for missing legal entity details.
+1. Discover existing variables / snippets / locales / documents / document types in your workspace.
+2. Fetch the brand's website and (if needed) ask you for missing legal entity details, OR analyse the requested document's structure.
 3. Produce a structured plan as a markdown table.
 4. Wait for your explicit approval.
-5. Execute the plan — brand, site, domain, market, variable + snippet overrides.
-6. Hand back to you with a link to review the result and hit **Publish** in the customer-app.
+5. Execute the plan — brand, site, domain, market, document, sections, blocks, variable + snippet overrides.
+6. Verify each `(document, brand, locale)` against the live preview and iterate.
+7. Hand back to you with a link to review the result and hit **Publish** in the customer-app.
 
 See [`skills/termshelf-author/SKILL.md`](skills/termshelf-author/SKILL.md) for the full workflow + error-handling contract.
 
