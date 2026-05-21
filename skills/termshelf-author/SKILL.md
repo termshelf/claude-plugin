@@ -21,16 +21,21 @@ When this skill is active, Claude Code has these MCP tools available under the `
 **Reads (no side effects, safe to call freely):**
 - `whoami` — confirm auth + see the bound workspace and the token's ability list
 - `list_sites`, `get_site` — existing sites + their domains, markets, profiles
-- `list_workspace_variables` — every `{{key}}` placeholder + `is_locale_agnostic` + `overrides_count`
-- `list_workspace_snippets` — reusable rich-text clauses, same shape
+- `list_workspace_variables`, `get_workspace_variable` — every `{{key}}` placeholder + `is_locale_agnostic` + `overrides_count` + the live draft `value` and the last-published value
+- `list_workspace_snippets`, `get_workspace_snippet` — reusable rich-text clauses + `working_blocks` (draft) + `published_blocks`
 - `list_locales` — the locale codes currently active in the workspace
 - `list_documents` — documents in the workspace (id, slug, title, document_type.code). Filter by `document_type_code` to narrow. Required input for `get_document_preview`.
-- `get_document_preview` — render a document as fully-resolved HTML for a `(brand_id, locale, market_code, site_profile_code)` tuple. Returns the same HTML the publish-time renderer would emit. Use this to **verify** override resolution after authoring — it surfaces `unresolved_variables`, `unresolved_snippets`, and the rendered text you can inspect for cross-locale leakage and placeholder stubs.
+- `list_snippet_overrides`, `get_snippet_override` — existing snippet-override rows scoped to a snippet, with their working_blocks draft. Use this to fetch an override ID before updating or archiving it.
+- `list_variable_overrides`, `get_variable_override` — same shape for variable overrides.
+- `get_document_preview` — render a document as fully-resolved HTML for a `(brand_id, locale, market_code, site_profile_code)` tuple. Resolves from the **draft working tree** (working_blocks of overrides + working_blocks of snippets + draft variable values), so changes made via the write tools below show up immediately — no publish step required. Use this to **verify** override resolution after authoring; surfaces `unresolved_variables`, `unresolved_snippets`, and the rendered text you can inspect for cross-locale leakage and placeholder stubs.
 
-**Writes (always confirm with the operator before calling):**
-- `create_brand`, `create_site`, `add_domain_to_site`, `attach_market_to_site`
-- `create_variable_override` — per-locale, per-target value
-- `create_snippet_override` — per-locale, per-target rich-text override (`blocks` optional, seeds from the closest parent if omitted)
+**Override writes** (require the `overrides:write` ability — always confirm with the operator before calling):
+- `create_variable_override`, `update_variable_override`, `delete_variable_override` — per-locale, per-target value. Delete is a hard-delete; the parent variable still needs at least one value somewhere (default OR override).
+- `create_snippet_override`, `update_snippet_override`, `archive_snippet_override`, `restore_snippet_override` — per-locale, per-target rich-text override. Snippet overrides use soft archive (not hard delete); restore is rejected if it would create an ambiguity with another live override.
+
+**Workspace-level writes** (require the `content:write` ability — confirm with the operator before calling):
+- `create_workspace_snippet`, `update_workspace_snippet`, `archive_workspace_snippet`, `restore_workspace_snippet`
+- `create_workspace_variable`, `update_workspace_variable`, `delete_workspace_variable`
 
 Every write tool accepts an optional `idempotency_key`. Use it when retrying a previously failed write so the server replays the original response inside its 24h window.
 
@@ -42,7 +47,7 @@ If a tool returns `auth.bearer_required`, the token is missing or invalid — su
 
 ### How the operator obtains a token
 
-If the MCP tools are not available at all (no `whoami` etc.), or the operator hasn't set this up yet, point them at [Settings → API Tokens](https://app.termshelf.de/app/settings/api-tokens) in the TermShelf customer-app. They need to issue a token with the abilities `structure:write`, `overrides:write`, and `content:read`, then export it before launching Claude Code:
+If the MCP tools are not available at all (no `whoami` etc.), or the operator hasn't set this up yet, point them at [Settings → API Tokens](https://app.termshelf.de/app/settings/api-tokens) in the TermShelf customer-app. They need to issue a token with the abilities `structure:write`, `overrides:write`, `content:read`, and (for authoring workspace-level snippets/variables) `content:write`, then export it before launching Claude Code:
 
 ```bash
 export TERMSHELF_TOKEN=<value>
@@ -60,7 +65,7 @@ Always call `whoami` first, exactly once at the start. It tells you:
 - which workspace you're operating on
 - which abilities the active token has
 
-If any abilities you need (`structure:write`, `overrides:write`, `content:read`) are missing, stop and tell the operator. They issue a new token with the right scopes at [Settings → API Tokens](https://app.termshelf.de/app/settings/api-tokens); you do not negotiate around missing ones.
+If any abilities you need are missing, stop and tell the operator. Required abilities by task: `content:read` for any discovery; `structure:write` for brand/site/domain/market creation; `overrides:write` for override CRUD; `content:write` only when authoring workspace-level snippets/variables (not needed for the common per-brand override flow). They issue a new token with the right scopes at [Settings → API Tokens](https://app.termshelf.de/app/settings/api-tokens); you do not negotiate around missing ones.
 
 ### 2. Discover
 
@@ -126,8 +131,8 @@ Once approved, run the writes **in order**:
 2. `create_site` next, passing `brand_id` from the brand response.
 3. `add_domain_to_site` once per domain.
 4. `attach_market_to_site` once per market (only if the operator named markets in the proposal).
-5. Variable overrides — one call per (variable, locale, target) tuple. For locale-agnostic variables, only one override per target (no locale loop).
-6. Snippet overrides — same axis logic.
+5. Variable overrides — one call per (variable, locale, target) tuple. For locale-agnostic variables, only one override per target (no locale loop). If the proposal says "fix the existing override on brand X" rather than "create a new one", call `list_variable_overrides` first to fetch the row ID, then `update_variable_override` instead of `create_variable_override`.
+6. Snippet overrides — same axis logic. Same fixing pattern: if a brand already has an override on a snippet (a frequent case for brands that were created earlier and seeded with stub drafts), `list_snippet_overrides` → `update_snippet_override`. Use `archive_snippet_override` to retire an override the operator no longer wants; `restore_snippet_override` to bring it back.
 
 Surface each tool's result back briefly ("Brand Acme Legal created (id=42)") so the operator can follow along. If a tool returns `isError: true`, **stop the workflow**. Do not proceed to the next step. Branch on the error code:
 
@@ -138,14 +143,14 @@ Surface each tool's result back briefly ("Brand Acme Legal created (id=42)") so 
 | `validation.failed` | Body invalid | Show the per-field errors, ask operator how to fix |
 | `resource.not_found` | The referenced ID doesn't exist in this workspace | Did you reference the wrong workspace? Ask operator. |
 | `resource.conflict` | Domain rule blocked the write (archived, slug collision, …) | Show the message, ask operator how to disambiguate |
-| `override.ambiguous` | The proposed override would create an unresolvable axis tuple | Suggest the operator narrow with another axis (market, profile) |
+| `override.ambiguous` | An override on the same axis tuple already exists (create), or restoring an archived row would tie with a live sibling (restore) | On create: call the corresponding `list_*_overrides` to find the existing row, then `update_*_override` instead. On restore: ask the operator to narrow with another axis (market, profile) or archive the rival first. |
 | `rate_limit.exceeded` | Token over its budget | Wait the `retry_after_seconds` and retry once; if still failing, stop |
 | `token.workspace_missing` | Token not bound to a workspace | Stop, tell operator to revoke and reissue the token at https://app.termshelf.de/app/settings/api-tokens |
 | `transport.unreachable` | The MCP server could not reach the TermShelf host at all (DNS, TLS, port closed) | Stop. Surface the `base_url` from the body and ask the operator to verify `TERMSHELF_BASE_URL` and that the backoffice is reachable. Synthesized by the MCP server — no HTTP request landed. |
 
 ### 6. Verify the result against the live preview
 
-**This step is not optional.** Variable and snippet override correctness is invisible from the write responses alone — `create_*` returning 201 only proves persistence, not that the rendered document for this brand and locale looks right. The preview is the ground truth.
+**This step is not optional.** Variable and snippet override correctness is invisible from the write responses alone — a `create_*` or `update_*` returning 2xx only proves persistence, not that the rendered document for this brand and locale looks right. The preview is the ground truth, and it now reads from the **draft working tree** (working_blocks of overrides + working_blocks of snippets + draft variable values), so authoring writes show up in the preview immediately — no intermediate publish step required.
 
 For **every** document the brand will publish (you discovered these via `list_documents` in step 2), and for **every** locale the brand supports (from `supported_locale_codes`), call:
 
@@ -180,7 +185,7 @@ You do **not** call any publish endpoint. The token deliberately lacks `publish:
 ## Things you do NOT do
 
 - You do NOT publish content. That's an operator action in the customer-app.
-- You do NOT delete or archive existing brands / sites / overrides — even if they're stale. This skill is additive.
+- You do NOT delete or archive existing brands or sites — those represent long-lived structural decisions and the destructive tooling is not exposed here on purpose. (Variable / snippet overrides and workspace-level snippets and variables CAN be edited and archived/deleted via the write tools — but only with explicit operator approval per change.)
 - You do NOT use Bash + curl for the management API. Use the MCP tools. They handle auth + error envelopes correctly and never leak the token.
 - You do NOT generate integration code for the public delivery API. That's the `termshelf` skill (Tier 1) — it's a separate task and a separate audience (developers consuming published content, not operators authoring it).
 - You do NOT silently retry on errors. Each closed-set code has a documented branch; follow it.
