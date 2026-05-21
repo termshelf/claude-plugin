@@ -21202,7 +21202,7 @@ var idempotencyInput = {
 };
 var server = new McpServer({
   name: "termshelf",
-  version: "0.6.0"
+  version: "0.7.0"
 });
 server.tool(
   "whoami",
@@ -21762,6 +21762,396 @@ server.tool(
     await callManagement("DELETE", `/workspace-variables/${variable_id}`, {
       idempotencyKey: idempotency_key
     })
+  )
+);
+server.tool(
+  "list_document_types",
+  "List document types in the active workspace \u2014 the taxonomy a document attaches to (`privacy`, `imprint`, `terms`, \u2026). Use this BEFORE create_document to find the `document_type_id` (or `document_type_code`) to pass. Active-only by default; pass status='inactive' or status='active' to filter explicitly.",
+  {
+    status: external_exports.enum(["active", "inactive"]).optional().describe("Filter to types in this lifecycle state."),
+    q: external_exports.string().optional().describe("Substring filter against code + label + description."),
+    ...paginationInput
+  },
+  async ({ status, q, page, per_page }) => {
+    const params = new URLSearchParams();
+    if (status) params.set("status", status);
+    if (q) params.set("q", q);
+    if (page) params.set("page", String(page));
+    if (per_page) params.set("per_page", String(per_page));
+    const qs = params.toString();
+    return asToolResult(
+      await callManagement("GET", `/document-types${qs ? `?${qs}` : ""}`)
+    );
+  }
+);
+server.tool(
+  "get_document_type",
+  "Fetch a single document type by row ID, including its tags, classification, and metadata.",
+  { document_type_id: external_exports.number().int().positive() },
+  async ({ document_type_id }) => asToolResult(
+    await callManagement("GET", `/document-types/${document_type_id}`)
+  )
+);
+server.tool(
+  "create_document_type",
+  "Create a new document type in the active workspace. Requires the `content:write` ability. The `code` is the stable machine identifier (slugified, must be unique per workspace) used by the public delivery URL and by version history; the `label` is the human display name. Use this only when the workspace does not yet have a baseline type for what you're authoring (e.g. fresh tenant). Idempotent across the (token, route, key) tuple when `idempotency_key` is supplied.",
+  {
+    code: external_exports.string().min(1).max(64).describe(
+      "Workspace-unique slug, e.g. 'privacy', 'imprint', 'terms', 'cookie_policy'. Normalized to lowercase."
+    ),
+    label: external_exports.string().max(255).optional().describe(
+      "Display name. Defaults to the normalized code if omitted."
+    ),
+    description: external_exports.string().max(1e3).optional(),
+    active: external_exports.boolean().optional().describe("Defaults to true. When false, the type is created in `inactive` state and cannot receive new documents until activated."),
+    ...idempotencyInput
+  },
+  async ({ idempotency_key, ...body }) => asToolResult(
+    await callManagement("POST", "/document-types", {
+      body,
+      idempotencyKey: idempotency_key
+    })
+  )
+);
+server.tool(
+  "update_document_type",
+  "Edit a document type's label, description, tags, classification, or free-form metadata blob. The `code` is immutable. Omitted fields are left untouched; pass `description: null` or `tags: null` to clear. Requires `content:write`.",
+  {
+    document_type_id: external_exports.number().int().positive(),
+    label: external_exports.string().min(1).max(255).optional(),
+    description: external_exports.string().max(1e3).nullable().optional(),
+    tags: external_exports.array(external_exports.string().max(64)).nullable().optional().describe(
+      "List of lowercase tag strings (a-z, 0-9, _ or -). Pass null to clear."
+    ),
+    metadata: external_exports.record(external_exports.string(), external_exports.unknown()).nullable().optional().describe(
+      "Free-form object payload (no list-style arrays at the top level). Pass null to clear."
+    ),
+    classification: external_exports.string().max(64).optional().describe(
+      "Stable classification code; rejected if not a known DocumentTypeClassification value."
+    ),
+    ...idempotencyInput
+  },
+  async ({ document_type_id, idempotency_key, ...body }) => asToolResult(
+    await callManagement(
+      "PATCH",
+      `/document-types/${document_type_id}`,
+      { body, idempotencyKey: idempotency_key }
+    )
+  )
+);
+server.tool(
+  "activate_document_type",
+  "Flip a document type from `inactive` back to `active` (idempotent). Rejected with resource.conflict if the row was soft-deleted \u2014 restore it via the customer-app first.",
+  {
+    document_type_id: external_exports.number().int().positive(),
+    ...idempotencyInput
+  },
+  async ({ document_type_id, idempotency_key }) => asToolResult(
+    await callManagement(
+      "POST",
+      `/document-types/${document_type_id}/activate`,
+      { body: {}, idempotencyKey: idempotency_key }
+    )
+  )
+);
+server.tool(
+  "deactivate_document_type",
+  "Flip a document type from `active` to `inactive` (idempotent). Existing documents linked to the type remain queryable; only new documents are blocked from selecting it.",
+  {
+    document_type_id: external_exports.number().int().positive(),
+    ...idempotencyInput
+  },
+  async ({ document_type_id, idempotency_key }) => asToolResult(
+    await callManagement(
+      "POST",
+      `/document-types/${document_type_id}/deactivate`,
+      { body: {}, idempotencyKey: idempotency_key }
+    )
+  )
+);
+server.tool(
+  "get_document",
+  "Fetch a single document by ID, including its full structured tree (sections with their ordered blocks). Use this after a series of section/block writes to inspect the persisted draft, or as the starting point for an edit.",
+  { document_id: external_exports.number().int().positive() },
+  async ({ document_id }) => asToolResult(await callManagement("GET", `/documents/${document_id}`))
+);
+server.tool(
+  "create_document",
+  "Create a new base document in the active workspace. The action creates the row + lifecycle status only \u2014 sections + blocks are authored separately via upsert_document_section / upsert_document_block. Either `document_type_id` (preferred) or `document_type_code` is required. Slug is auto-derived from the title when omitted, kept unique per (workspace, type), and is immutable once persisted (rename = new document). Requires `content:write`.",
+  {
+    document_type_id: external_exports.number().int().positive().optional().describe(
+      "Document type to attach this document to (see list_document_types). Pass either this or document_type_code."
+    ),
+    document_type_code: external_exports.string().max(64).optional().describe(
+      "Resolve the type by its stable code (e.g. 'privacy'). Convenient when the agent only knows the code; the server resolves it to the workspace's `document_type_id`."
+    ),
+    title: external_exports.string().min(1).max(255).describe("Display title."),
+    slug: external_exports.string().max(255).optional().describe(
+      "URL-safe slug. The server normalizes from `title` if omitted and appends a numeric suffix on collision."
+    ),
+    summary: external_exports.string().max(5e3).optional().describe("Free-text operator summary."),
+    client_id: external_exports.number().int().positive().nullable().optional(),
+    brand_id: external_exports.number().int().positive().nullable().optional(),
+    product_id: external_exports.number().int().positive().nullable().optional(),
+    site_id: external_exports.number().int().positive().nullable().optional(),
+    supported_locale_codes: external_exports.array(external_exports.string().max(32)).optional().describe(
+      "BCP-47-like locale codes this document is authored in. Defaults to the linked site's locales (falling back to the workspace default). Must contain `default_locale_code` if both are sent."
+    ),
+    default_locale_code: external_exports.string().max(32).optional().describe(
+      "Default locale; falls back to the first entry of `supported_locale_codes`, then the linked site's default, then the workspace default."
+    ),
+    ...idempotencyInput
+  },
+  async ({ idempotency_key, ...body }) => asToolResult(
+    await callManagement("POST", "/documents", {
+      body,
+      idempotencyKey: idempotency_key
+    })
+  )
+);
+server.tool(
+  "update_document",
+  "Edit a document's title, summary, structural scope (client/brand/product/site), or document_type_id. The slug is intentionally NOT editable \u2014 rename = new document. Changing `document_type_id` is rejected with `document_type_publications_exist` if live publications under the current type still exist; pass `confirm_publication_url_break=true` to acknowledge that the public delivery URLs will be orphaned.",
+  {
+    document_id: external_exports.number().int().positive(),
+    title: external_exports.string().min(1).max(255).optional(),
+    summary: external_exports.string().max(5e3).nullable().optional(),
+    client_id: external_exports.number().int().positive().nullable().optional(),
+    brand_id: external_exports.number().int().positive().nullable().optional(),
+    product_id: external_exports.number().int().positive().nullable().optional(),
+    site_id: external_exports.number().int().positive().nullable().optional(),
+    document_type_id: external_exports.number().int().positive().optional(),
+    confirm_publication_url_break: external_exports.boolean().optional(),
+    ...idempotencyInput
+  },
+  async ({ document_id, idempotency_key, ...body }) => asToolResult(
+    await callManagement("PATCH", `/documents/${document_id}`, {
+      body,
+      idempotencyKey: idempotency_key
+    })
+  )
+);
+server.tool(
+  "archive_document",
+  "Archive a document (soft lifecycle freeze). Archived documents stop receiving content writes; sections/blocks remain queryable but the document_blocks/sections endpoints reject mutations. Idempotent.",
+  {
+    document_id: external_exports.number().int().positive(),
+    ...idempotencyInput
+  },
+  async ({ document_id, idempotency_key }) => asToolResult(
+    await callManagement(
+      "POST",
+      `/documents/${document_id}/archive`,
+      { body: {}, idempotencyKey: idempotency_key }
+    )
+  )
+);
+server.tool(
+  "restore_document",
+  "Restore an archived document back to `draft`. Idempotent for already-draft documents.",
+  {
+    document_id: external_exports.number().int().positive(),
+    ...idempotencyInput
+  },
+  async ({ document_id, idempotency_key }) => asToolResult(
+    await callManagement(
+      "POST",
+      `/documents/${document_id}/restore`,
+      { body: {}, idempotencyKey: idempotency_key }
+    )
+  )
+);
+server.tool(
+  "delete_document",
+  "Hard-delete a document. Rejected with `document_in_use` (409) when any of: a publication (live or rolled-back), an active review request (pending / in_review), or a pending patch proposal (proposed / under_review / approved) references the document. Archive instead if you want to preserve those artefacts.",
+  {
+    document_id: external_exports.number().int().positive(),
+    ...idempotencyInput
+  },
+  async ({ document_id, idempotency_key }) => asToolResult(
+    await callManagement(
+      "DELETE",
+      `/documents/${document_id}`,
+      { idempotencyKey: idempotency_key }
+    )
+  )
+);
+server.tool(
+  "add_document_locale",
+  "Add a translation locale to a document. The server deep-copies the default-locale text into the new locale's translation slot so the SPA opens a populated tab instead of an empty stub. Idempotent \u2014 re-adding an existing locale is a no-op.",
+  {
+    document_id: external_exports.number().int().positive(),
+    locale: external_exports.string().min(1).max(32).describe("BCP-47-like locale tag, e.g. en or en-GB."),
+    ...idempotencyInput
+  },
+  async ({ document_id, locale, idempotency_key }) => asToolResult(
+    await callManagement(
+      "POST",
+      `/documents/${document_id}/locales`,
+      { body: { locale }, idempotencyKey: idempotency_key }
+    )
+  )
+);
+server.tool(
+  "remove_document_locale",
+  "Remove a translation locale from a document. The default locale cannot be removed \u2014 the server returns 422 + `code = cannot_remove_default_locale` for that case.",
+  {
+    document_id: external_exports.number().int().positive(),
+    locale: external_exports.string().min(1).max(32),
+    ...idempotencyInput
+  },
+  async ({ document_id, locale, idempotency_key }) => asToolResult(
+    await callManagement(
+      "DELETE",
+      `/documents/${document_id}/locales/${encodeURIComponent(locale)}`,
+      { idempotencyKey: idempotency_key }
+    )
+  )
+);
+server.tool(
+  "list_document_sections",
+  "List the sections of a document, ordered by position. Each entry embeds its `blocks` array (also ordered by position) so a single call returns the structured tree the customer-app's editor renders.",
+  { document_id: external_exports.number().int().positive() },
+  async ({ document_id }) => asToolResult(
+    await callManagement("GET", `/documents/${document_id}/sections`)
+  )
+);
+server.tool(
+  "upsert_document_section",
+  "Create-or-update a document section by stable `key`. The `key` is immutable once persisted because variant overrides reference it; the only mutable field on an existing section is `title`. New sections are appended to the document's end (re-position via reorder_document_sections). Requires `content:write`.",
+  {
+    document_id: external_exports.number().int().positive(),
+    key: external_exports.string().min(2).max(64).describe(
+      "Stable identifier (2\u201364 chars, must start with a letter, only a-z / 0-9 / underscore / hyphen)."
+    ),
+    title: external_exports.string().max(255).nullable().optional().describe(
+      "Human display heading for the section. Renders above the section's blocks. Pass null to clear an existing title."
+    ),
+    ...idempotencyInput
+  },
+  async ({ document_id, idempotency_key, ...body }) => asToolResult(
+    await callManagement(
+      "PUT",
+      `/documents/${document_id}/sections`,
+      { body, idempotencyKey: idempotency_key }
+    )
+  )
+);
+server.tool(
+  "delete_document_section",
+  "Hard-delete a section and all blocks it contains. The server re-packs remaining section positions to stay contiguous.",
+  {
+    document_id: external_exports.number().int().positive(),
+    section_id: external_exports.number().int().positive(),
+    ...idempotencyInput
+  },
+  async ({ document_id, section_id, idempotency_key }) => asToolResult(
+    await callManagement(
+      "DELETE",
+      `/documents/${document_id}/sections/${section_id}`,
+      { idempotencyKey: idempotency_key }
+    )
+  )
+);
+server.tool(
+  "reorder_document_sections",
+  "Reorder a document's sections deterministically. The input MUST list every section's `key` exactly once \u2014 partial orders are rejected. Returns `{status: 'ok'}` on success; a no-op call (current order matches input) is a no-op and does not emit an audit event.",
+  {
+    document_id: external_exports.number().int().positive(),
+    ordered_keys: external_exports.array(external_exports.string().min(1).max(255)).min(1).describe(
+      "Complete list of section keys in the desired order. Must cover every section exactly once."
+    ),
+    ...idempotencyInput
+  },
+  async ({ document_id, ordered_keys, idempotency_key }) => asToolResult(
+    await callManagement(
+      "POST",
+      `/documents/${document_id}/sections/reorder`,
+      { body: { ordered_keys }, idempotencyKey: idempotency_key }
+    )
+  )
+);
+server.tool(
+  "list_document_blocks",
+  "List the blocks of a specific section, ordered by position. Same data as `list_document_sections[i].blocks`, exposed separately for callers that already have a section id and don't need the full tree.",
+  {
+    document_id: external_exports.number().int().positive(),
+    section_id: external_exports.number().int().positive()
+  },
+  async ({ document_id, section_id }) => asToolResult(
+    await callManagement(
+      "GET",
+      `/documents/${document_id}/sections/${section_id}/blocks`
+    )
+  )
+);
+server.tool(
+  "upsert_document_block",
+  "Create-or-update a document block by stable `key`. The `key` is unique per document \u2014 moving a block to a different section is allowed by passing the new section's id. `kind` controls payload validation; the supported kinds are: heading, paragraph, list, note, table, image, snippet_reference. Payload shapes are kind-specific (see below). Variable references like `{{key}}` inside text are validated against the workspace's variables. Snippet references must point to a published snippet. Requires `content:write`.",
+  {
+    document_id: external_exports.number().int().positive(),
+    section_id: external_exports.number().int().positive().describe("Target section id."),
+    key: external_exports.string().min(2).max(64).describe(
+      "Stable identifier (2\u201364 chars, must start with a letter, only a-z / 0-9 / underscore / hyphen). Unique per document."
+    ),
+    kind: external_exports.enum([
+      "heading",
+      "paragraph",
+      "list",
+      "note",
+      "table",
+      "image",
+      "snippet_reference"
+    ]).describe(
+      "Block kind. Payload schema:\n  heading            -> { text: string, level?: 1-6 (default 2), inlines?: list }\n  paragraph          -> { text: string, inlines?: list }\n  list               -> { items: list<string>, style?: 'bullet'|'ordered', item_inlines?: list }\n  note               -> { text: string, severity?: 'info'|'warning' (default 'info'), inlines?: list }\n  table              -> { rows: list<list<string>>, header?: bool, cell_inlines?: list, cell_attrs?: list }\n  image              -> { src: absolute http(s) URL, alt?: string, title?: string }\n  snippet_reference  -> { snippet_id: int (must point to a published workspace snippet) }"
+    ),
+    payload: external_exports.record(external_exports.string(), external_exports.unknown()).describe(
+      "Kind-specific payload (see the `kind` description). Unknown fields are rejected."
+    ),
+    ...idempotencyInput
+  },
+  async ({ document_id, section_id, idempotency_key, ...body }) => asToolResult(
+    await callManagement(
+      "PUT",
+      `/documents/${document_id}/sections/${section_id}/blocks`,
+      { body, idempotencyKey: idempotency_key }
+    )
+  )
+);
+server.tool(
+  "delete_document_block",
+  "Hard-delete a block. Remaining blocks in the same section are repositioned to stay contiguous.",
+  {
+    document_id: external_exports.number().int().positive(),
+    section_id: external_exports.number().int().positive(),
+    block_id: external_exports.number().int().positive(),
+    ...idempotencyInput
+  },
+  async ({ document_id, section_id, block_id, idempotency_key }) => asToolResult(
+    await callManagement(
+      "DELETE",
+      `/documents/${document_id}/sections/${section_id}/blocks/${block_id}`,
+      { idempotencyKey: idempotency_key }
+    )
+  )
+);
+server.tool(
+  "reorder_document_blocks",
+  "Reorder a section's blocks deterministically. The input MUST list every block's `key` exactly once \u2014 partial orders are rejected. A no-op call (current order matches input) is silent.",
+  {
+    document_id: external_exports.number().int().positive(),
+    section_id: external_exports.number().int().positive(),
+    ordered_keys: external_exports.array(external_exports.string().min(1).max(255)).min(1).describe(
+      "Complete list of block keys in the desired order. Must cover every block in the section exactly once."
+    ),
+    ...idempotencyInput
+  },
+  async ({ document_id, section_id, ordered_keys, idempotency_key }) => asToolResult(
+    await callManagement(
+      "POST",
+      `/documents/${document_id}/sections/${section_id}/blocks/reorder`,
+      { body: { ordered_keys }, idempotencyKey: idempotency_key }
+    )
   )
 );
 async function main() {
