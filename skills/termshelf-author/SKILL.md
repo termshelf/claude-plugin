@@ -21,13 +21,16 @@ When this skill is active, Claude Code has these MCP tools available under the `
 **Reads (no side effects, safe to call freely):**
 - `whoami` — confirm auth + see the bound workspace and the token's ability list
 - `list_sites`, `get_site` — existing sites + their domains, markets, profiles
-- `list_workspace_variables`, `get_workspace_variable` — every `{{key}}` placeholder + `is_locale_agnostic` + `overrides_count` + the live draft `value` and the last-published value
-- `list_workspace_snippets`, `get_workspace_snippet` — reusable rich-text clauses + `working_blocks` (draft) + `published_blocks`
+- `list_workspace_variables`, `get_workspace_variable` — every `{{key}}` placeholder + `is_locale_agnostic` + `overrides_count` + the live draft `value` and the last-published value + `has_unpublished_changes` (true iff the draft would actually persist a new version on publish)
+- `list_workspace_snippets`, `get_workspace_snippet` — reusable rich-text clauses + `working_blocks` (draft) + `published_blocks` + `has_unpublished_changes`
 - `list_locales` — the locale codes currently active in the workspace
 - `list_documents` — documents in the workspace (id, slug, title, document_type.code). Filter by `document_type_code` to narrow. Required input for `get_document_preview`.
-- `list_snippet_overrides`, `get_snippet_override` — existing snippet-override rows scoped to a snippet, with their working_blocks draft. Use this to fetch an override ID before updating or archiving it.
-- `list_variable_overrides`, `get_variable_override` — same shape for variable overrides.
+- `list_snippet_overrides`, `get_snippet_override` — existing snippet-override rows scoped to a snippet, with their working_blocks draft and `has_unpublished_changes`. Use this to fetch an override ID before updating or archiving it.
+- `list_variable_overrides`, `get_variable_override` — same shape for variable overrides; also carries `has_unpublished_changes`.
 - `get_document_preview` — render a document as fully-resolved HTML for a `(brand_id, locale, market_code, site_profile_code)` tuple. Resolves from the **draft working tree** (working_blocks of overrides + working_blocks of snippets + draft variable values), so changes made via the write tools below show up immediately — no publish step required. Use this to **verify** override resolution after authoring; surfaces `unresolved_variables`, `unresolved_snippets`, and the rendered text you can inspect for cross-locale leakage and placeholder stubs.
+- `list_document_unpublished_refs` — pre-publish cascade discovery. Given a document and the publication targets the operator is about to publish to, returns the snippets, variables, snippet-overrides and variable-overrides whose working draft differs from the published version. Use this when the operator asks "what drafts are still pending for this document?" — surfaces the same checklist the customer-app's publish page renders. Read-only.
+
+The `has_unpublished_changes` flag is true when the draft would actually persist as a new version on publish (i.e. the canonical hash of `working_blocks` differs from the latest published version's `content_hash`). An empty draft is never dirty, since the publisher refuses to publish it. Use this flag to answer "which authored items are still pending publish?" without diffing JSON blocks yourself.
 
 **Override writes** (require the `overrides:write` ability — always confirm with the operator before calling):
 - `create_variable_override`, `update_variable_override`, `delete_variable_override` — per-locale, per-target value. Delete is a hard-delete; the parent variable still needs at least one value somewhere (default OR override).

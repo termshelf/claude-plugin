@@ -381,6 +381,57 @@ server.tool(
   },
 );
 
+server.tool(
+  "list_document_unpublished_refs",
+  "Pre-publish cascade discovery: for a document and the publication targets it would be published to, lists the snippets, variables, snippet-overrides and variable-overrides whose working draft differs from the last-published version. Use this to answer 'what drafts would the operator still need to publish if they wanted this document to ship its latest authored state?' Each row carries `latest_published_version_number` so the agent can phrase the diff (e.g. 'publish v3 → v4'). Read-only — never mutates state.",
+  {
+    document_id: z
+      .number()
+      .int()
+      .positive()
+      .describe("Document row ID (see list_documents)."),
+    targets: z
+      .array(
+        z
+          .object({
+            site_id: z
+              .number()
+              .int()
+              .positive()
+              .describe("Target site to publish to (see list_sites)."),
+            locale_code: z
+              .string()
+              .max(32)
+              .optional()
+              .describe(
+                "BCP-47-like locale tag, e.g. de or en-GB. Omit to fall back to the site's default locale.",
+              ),
+            market_code: z
+              .string()
+              .max(16)
+              .optional()
+              .describe("Optional market code; must already exist in the workspace."),
+            site_profile_code: z
+              .string()
+              .max(64)
+              .optional()
+              .describe("Optional site profile code; must already exist in the workspace."),
+          })
+          .strict(),
+      )
+      .min(1)
+      .describe(
+        "One row per (site, locale, market?, profile?) target the operator plans to publish to. Override discovery is filtered to overrides matching at least one of these tuples.",
+      ),
+  },
+  async ({ document_id, targets }) =>
+    asToolResult(
+      await callManagement("POST", `/documents/${document_id}/unpublished-references`, {
+        body: { targets },
+      }),
+    ),
+);
+
 // === Write tools ===========================================================
 
 server.tool(
