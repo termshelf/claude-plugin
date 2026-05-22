@@ -282,7 +282,16 @@ Once approved, run the writes **in order**:
 
 5. **Re-order if needed**. If you authored blocks/sections out of the operator's intended order, call `reorder_document_blocks` / `reorder_document_sections` with the full ordered key list.
 
-6. **Add additional locales** with `add_document_locale` once per non-default locale. The server deep-copies the default-locale text into each new locale's translation slot — the operator then translates inside the customer-app (locale-by-locale text edits are NOT exposed via this surface; the editor lives in the SPA). When the workflow is purely structural (e.g. one locale only), skip this step.
+6. **Add additional locales** with `add_document_locale` once per non-default locale. The server deep-copies the default-locale text into each new locale's translation slot so the SPA opens a populated tab. When the workflow is purely structural (e.g. one locale only), skip this step.
+
+   **Author the translations from this surface.** Both `upsert_document_section` and `upsert_document_block` accept an optional `translations` field that maps `locale → per-locale text`:
+
+   - On sections: `translations: { en: { title: "Provider" } }` — translates the section heading.
+   - On blocks: `translations: { en: { text: "The provider of this website is:" } }` — translates the text fragment. Fragment shape is kind-specific; it mirrors the `payload` minus the structural fields (no `level` on headings, no `style` on lists, no `severity` on notes, no `header` on tables — those stay shared across locales). `snippet_reference` blocks have no translatable text; the snippet's own per-locale overrides carry the translation.
+
+   Partial-merge semantics: locales not in the input are left untouched; pass `{ en: null }` (or `{ en: { title: null } }` on sections) to drop a locale entry. Variable references like `{{key}}` work the same inside translation text and are validated identically. Changing a block's `kind` clears any stored translations because the fragment shape becomes stale — re-author them in the same call or a follow-up.
+
+   The document's `title` and `summary` are not yet translatable via this surface; they remain single strings.
 
 7. **Cross-link with the brand-onboarding flow** if applicable. If you just created the document AND the operator is onboarding a brand at the same time, run the **Verify** loop below for the new document under the new brand's `(brand, locale)` tuples. Otherwise verify against the document's `default_locale_code` only.
 
