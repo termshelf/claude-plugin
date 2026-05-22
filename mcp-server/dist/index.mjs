@@ -21202,7 +21202,7 @@ var idempotencyInput = {
 };
 var server = new McpServer({
   name: "termshelf",
-  version: "0.9.0"
+  version: "0.10.0"
 });
 server.tool(
   "whoami",
@@ -22025,7 +22025,7 @@ server.tool(
       "Stable identifier (2\u201364 chars, must start with a letter, only a-z / 0-9 / underscore / hyphen)."
     ),
     title: external_exports.string().max(255).nullable().optional().describe(
-      "Default-locale section title (the document's `default_locale_code`). Pass null to clear an existing title."
+      "Default-locale section title (the document's `default_locale_code`). Three-state: pass a string to set it, pass null to clear it, OR omit the field entirely to leave the existing title unchanged (useful when patching only `translations`)."
     ),
     translations: external_exports.record(external_exports.string(), external_exports.unknown()).optional().describe(
       "Per-locale title overrides for the section. Shape: `{ [locale]: { title: string } }` or `{ [locale]: null }` to drop a locale entry. Locales must appear in the document's `supported_locale_codes` and MUST NOT equal `default_locale_code` (edit `title` for that). Partial-merge semantics: locales not present are left untouched. Omit the field entirely to leave existing translations as-is."
