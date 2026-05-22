@@ -88,7 +88,23 @@ In parallel, call:
 
 You now know the full "shape" of the overrides the new brand will need. Locale-agnostic variables/snippets do not need per-locale overrides (the parent value carries everything); locale-aware ones do.
 
-**Workspace parent values are not language-policed.** A snippet whose `published_blocks` happen to be authored in German renders as German in every locale that has no override — including the English preview. The same is true in reverse. Treat "the parent already fits" as a *content* claim per (locale): a snippet with German parent body fits Termshelf's DE locale but not its EN locale, and vice versa. Plan overrides per (brand × locale × snippet), not per (brand × snippet).
+**Workspace parent values are not language-policed.** A snippet whose `published_blocks` happen to be authored in German renders as German in every locale that has no override — including the English preview. The same is true in reverse. Treat "the parent already fits" as a *content* claim per (locale): a snippet with German parent body fits Termshelf's DE locale but not its EN locale, and vice versa. Plan overrides per axis tuple, scoping only as narrowly as the content actually varies — locale-only is valid when content differs by language but not by brand.
+
+### Picking override scope
+
+`create_variable_override` and `create_snippet_override` both accept `brand_id` as **optional**. Omitting it scopes the override only by `locale` (and optionally market / site_profile). The resolver picks the most specific match: `(brand + locale)` > `(locale)` > workspace parent. Every brand that has no narrower override inherits the locale-only one.
+
+Before adding `brand_id`, ask: **does the content actually differ across brands at this locale?**
+- **No** (boilerplate clauses, EU-mandated wording, generic translations) → omit `brand_id`. One override, every brand inherits it.
+- **Yes** (per-brand entity names, contact emails, jurisdictional carve-outs) → scope to `brand_id`.
+
+Creating identical per-brand overrides where one locale-only override would do is a smell: it multiplies the surface to publish, multiplies the audit log, and forces every future content edit to be repeated N times.
+
+> **Contract for `is_locale_agnostic: true` variables.** A locale-agnostic variable carries a single workspace-wide value with no per-axis variation. The backend enforces this:
+> - `create_variable_override` is rejected (`validation.failed`) if the parent is locale-agnostic AND any of `brand_id` / `market_id` / `site_profile_id` is set.
+> - `update_workspace_variable` is rejected (`validation.failed`) if you try to flip `is_locale_agnostic` to `true` while axis-scoped overrides already exist.
+>
+> Practical guidance: if you might ever need per-brand variation for a value, create the variable with `is_locale_agnostic: false` from the start (even when the value happens not to vary by locale today). Reserve `is_locale_agnostic: true` for genuinely workspace-wide constants (e.g. a shared support phone, an EU-wide SCC clause id) where the answer to "could brand X want a different value?" is "no, ever."
 
 ### 3. Gather the brand profile
 
@@ -129,7 +145,10 @@ Render a structured proposal back to the operator. Keep it scannable — a markd
 | Snippet key | Brand | Locale | Reason |
 |---|---|---|---|
 | liability_clause | Acme Legal | de | Acme is a GmbH; default clause assumes Ltd. |
+| eu_dispute_resolution | — (all brands) | en | EU boilerplate; identical text for every brand, locale-only fallback |
 ```
+
+Note the second row: when the override content is identical across brands at the same locale, leave the Brand column blank and omit `brand_id` on the call. Reserve brand-scoped overrides for content that genuinely varies per brand.
 
 Then ask: "Approve? (y/N)" — and wait. Do NOT execute until the operator says yes.
 
@@ -197,7 +216,7 @@ Same as the brand flow: `whoami` once at the start. You need `content:read` and 
 In parallel:
 - `list_document_types` — to pick the type the new document attaches to. If the requested document type does not exist (`privacy`, `imprint`, `terms`, …), surface this to the operator BEFORE drafting; the type drives the public delivery URL and the taxonomy that later epics (rule packs, applicability) bind to.
 - `list_documents` filtered by `document_type_code` — to check whether a document already exists. If one already exists, ask the operator whether to edit the existing draft or create a sibling under a different slug.
-- `list_workspace_snippets` — every snippet the operator can reference via `snippet_reference` blocks. Note the `key`, `id`, `title`, `is_locale_agnostic`, and **whether it's published** (`published_blocks` is non-null). `snippet_reference` blocks can only point to published snippets.
+- `list_workspace_snippets` — every snippet the operator can reference via `snippet_reference` blocks. Note the `key`, `id`, `title`, and `is_locale_agnostic`. Draft snippets can be referenced too; the publish-time cascade and preview's `unresolved_snippets` array surface any still-unpublished referents before the document goes live.
 - `list_workspace_variables` — every `{{key}}` placeholder that may appear inside `heading` / `paragraph` / `list` / `note` / `table` cells. The block payload validator rejects references to unknown keys.
 - `list_locales` — the locale codes the workspace operates in. The document's `supported_locale_codes` defaults from the linked site (if any) or workspace default; you can override at create time, but every entry has to exist in the workspace.
 
@@ -243,7 +262,7 @@ Once approved, run the writes **in order**:
 
 1. **Pre-flight the dependencies**:
    - Any unknown variable `{{key}}` referenced in the draft → either ask the operator to create them (`create_workspace_variable`), or rewrite the offending text to avoid the reference. Do not silently invent a workspace variable.
-   - Any snippet referenced by id that isn't published → tell the operator; refuse to insert the `snippet_reference` until they publish it via the customer-app. (`create_workspace_snippet` + `update_workspace_snippet` build a draft, but only the customer-app's publish step makes it referenceable.)
+   - Snippets referenced by id may be drafts — the write succeeds either way. Snippet references resolve at render time, so the preview will mark unresolved ones in `unresolved_snippets`, and the publish-time cascade refuses to publish a document whose referenced snippets aren't published. Tell the operator about any draft references so they remember to publish those snippets before publishing the document.
    - If the requested `document_type_code` is missing → ask the operator if they want it created (`create_document_type`). Defaulting silently is wrong here: the type is part of the public URL.
 
 2. **Create the document shell** with `create_document`. Pass `document_type_id` (preferred — you got it from `list_document_types`) or `document_type_code`. The action only creates the row + lifecycle status; sections and blocks come next.
@@ -257,7 +276,7 @@ Once approved, run the writes **in order**:
    - `note` → `{ text, severity?: 'info' | 'warning' }`. Useful for operator remarks the publisher should see, e.g. "TODO: confirm processor list".
    - `table` → `{ rows: [[cell, …], …], header?: bool }`. Cells are single-line strings. Every row must have the same column count.
    - `image` → `{ src: absolute http(s) URL, alt?, title? }`. Image bytes are not stored — only URLs.
-   - `snippet_reference` → `{ snippet_id }`. Renders the published snippet inline. The snippet must be published; the block carries no body of its own.
+   - `snippet_reference` → `{ snippet_id }`. Renders the snippet inline at delivery time. The snippet does not have to be published when the block is written, but the publish-time cascade will refuse to publish the document until every referenced snippet is published.
 
    Each block also needs a stable `key` unique within the document (2–64 chars, must start with a letter, only a-z / 0-9 / underscore / hyphen). Pick semantic keys (`intro_p1`, `rights_ref`) — they show up in audit events and variant overrides bind to them.
 
