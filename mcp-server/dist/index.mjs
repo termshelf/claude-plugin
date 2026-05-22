@@ -21202,7 +21202,7 @@ var idempotencyInput = {
 };
 var server = new McpServer({
   name: "termshelf",
-  version: "0.8.0"
+  version: "0.9.0"
 });
 server.tool(
   "whoami",
@@ -22018,14 +22018,17 @@ server.tool(
 );
 server.tool(
   "upsert_document_section",
-  "Create-or-update a document section by stable `key`. The `key` is immutable once persisted because variant overrides reference it; the only mutable field on an existing section is `title`. New sections are appended to the document's end (re-position via reorder_document_sections). Requires `content:write`.",
+  "Create-or-update a document section by stable `key`. The `key` is immutable once persisted because variant overrides reference it; the mutable fields on an existing section are `title` and `translations`. New sections are appended to the document's end (re-position via reorder_document_sections). Requires `content:write`.",
   {
     document_id: external_exports.number().int().positive(),
     key: external_exports.string().min(2).max(64).describe(
       "Stable identifier (2\u201364 chars, must start with a letter, only a-z / 0-9 / underscore / hyphen)."
     ),
     title: external_exports.string().max(255).nullable().optional().describe(
-      "Human display heading for the section. Renders above the section's blocks. Pass null to clear an existing title."
+      "Default-locale section title (the document's `default_locale_code`). Pass null to clear an existing title."
+    ),
+    translations: external_exports.record(external_exports.string(), external_exports.unknown()).optional().describe(
+      "Per-locale title overrides for the section. Shape: `{ [locale]: { title: string } }` or `{ [locale]: null }` to drop a locale entry. Locales must appear in the document's `supported_locale_codes` and MUST NOT equal `default_locale_code` (edit `title` for that). Partial-merge semantics: locales not present are left untouched. Omit the field entirely to leave existing translations as-is."
     ),
     ...idempotencyInput
   },
@@ -22106,7 +22109,10 @@ server.tool(
       "Block kind. Payload schema:\n  heading            -> { text: string, level?: 1-6 (default 2), inlines?: list }\n  paragraph          -> { text: string, inlines?: list }\n  list               -> { items: list<string>, style?: 'bullet'|'ordered', item_inlines?: list }\n  note               -> { text: string, severity?: 'info'|'warning' (default 'info'), inlines?: list }\n  table              -> { rows: list<list<string>>, header?: bool, cell_inlines?: list, cell_attrs?: list }\n  image              -> { src: absolute http(s) URL, alt?: string, title?: string }\n  snippet_reference  -> { snippet_id: int (must point to a published workspace snippet) }"
     ),
     payload: external_exports.record(external_exports.string(), external_exports.unknown()).describe(
-      "Kind-specific payload (see the `kind` description). Unknown fields are rejected."
+      "Default-locale (document's `default_locale_code`) payload. Kind-specific schema (see the `kind` description). Unknown fields are rejected."
+    ),
+    translations: external_exports.record(external_exports.string(), external_exports.unknown()).optional().describe(
+      "Per-locale text-fragment overrides for the block. Shape: `{ [locale]: <text-fragment> }` or `{ [locale]: null }` to drop a locale entry. Locales must appear in the document's `supported_locale_codes` and MUST NOT equal `default_locale_code`. Partial-merge semantics: locales not in the input are left untouched. Fragments carry ONLY text-bearing fields (structural fields like `level`, `style`, `severity`, `header` stay shared across locales):\n  heading            -> { text: string, inlines?: list }\n  paragraph          -> { text: string, inlines?: list }\n  list               -> { items: list<string>, item_inlines?: list }\n  note               -> { text: string, inlines?: list }\n  table              -> { rows: list<list<string>>, cell_inlines?: list }\n  image              -> { alt?: string, title?: string }\n  snippet_reference  -> not supported (no translatable text). Changing `kind` clears any stored translations."
     ),
     ...idempotencyInput
   },
