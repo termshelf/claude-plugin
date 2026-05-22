@@ -1315,7 +1315,7 @@ server.tool(
       .nullable()
       .optional()
       .describe(
-        "Default-locale section title (the document's `default_locale_code`). Pass null to clear an existing title.",
+        "Default-locale section title (the document's `default_locale_code`). Three-state: pass a string to set it, pass null to clear it, OR omit the field entirely to leave the existing title unchanged (useful when patching only `translations`).",
       ),
     translations: z
       .record(z.string(), z.unknown())
