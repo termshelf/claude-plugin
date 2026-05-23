@@ -100,11 +100,12 @@ Before adding `brand_id`, ask: **does the content actually differ across brands 
 
 Creating identical per-brand overrides where one locale-only override would do is a smell: it multiplies the surface to publish, multiplies the audit log, and forces every future content edit to be repeated N times.
 
-> **Contract for `is_locale_agnostic: true` variables.** A locale-agnostic variable carries a single workspace-wide value with no per-axis variation. The backend enforces this:
-> - `create_variable_override` is rejected (`validation.failed`) if the parent is locale-agnostic AND any of `brand_id` / `market_id` / `site_profile_id` is set.
-> - `update_workspace_variable` is rejected (`validation.failed`) if you try to flip `is_locale_agnostic` to `true` while axis-scoped overrides already exist.
+> **Contract for `is_locale_agnostic: true` variables.** "Locale-agnostic" means *no per-locale variation* — it does **not** mean "no per-axis variation." Brand, market, and site_profile overrides are allowed; only the locale axis is suppressed.
+> - `create_variable_override` on a locale-agnostic parent **requires** `locale` to be omitted (or `null`) and **requires** at least one of `brand_id` / `market_id` / `site_profile_id` to be set. Setting `locale` is rejected (`validation.failed`); a fully-empty axis tuple is rejected because it would duplicate the workspace default.
+> - `update_workspace_variable` flipping `is_locale_agnostic` to `true` auto-nulls the `locale` column on existing axis-scoped overrides (non-destructive — they keep applying, just without the locale dimension). The flip is still rejected when locale-only overrides exist (those would collapse into the workspace default).
+> - Flipping `is_locale_agnostic` back to `false` is rejected when null-locale overrides exist — re-author them per-locale first, or delete them.
 >
-> Practical guidance: if you might ever need per-brand variation for a value, create the variable with `is_locale_agnostic: false` from the start (even when the value happens not to vary by locale today). Reserve `is_locale_agnostic: true` for genuinely workspace-wide constants (e.g. a shared support phone, an EU-wide SCC clause id) where the answer to "could brand X want a different value?" is "no, ever."
+> Practical guidance: use `is_locale_agnostic: true` when the value's *content* is the same in every language but may vary per brand/market (e.g. `brand.name`, `support_email`). Use `false` only when the content genuinely varies by language. Resolver behaviour: a locale-agnostic variable resolves the best-matching axis-scoped override (most-specific-wins on brand/market/profile) and falls back to the parent's published `value`.
 
 ### 3. Gather the brand profile
 
@@ -160,7 +161,7 @@ Once approved, run the writes **in order**:
 2. `create_site` next, passing `brand_id` from the brand response.
 3. `add_domain_to_site` once per domain.
 4. `attach_market_to_site` once per market (only if the operator named markets in the proposal).
-5. Variable overrides — one call per (variable, locale, target) tuple. For locale-agnostic variables, only one override per target (no locale loop). If the proposal says "fix the existing override on brand X" rather than "create a new one", call `list_variable_overrides` first to fetch the row ID, then `update_variable_override` instead of `create_variable_override`.
+5. Variable overrides — one call per (variable, locale, target) tuple for locale-aware variables; one call per (variable, axis target) tuple for locale-agnostic variables (omit `locale` on the create — see the locale-agnostic contract above). If the proposal says "fix the existing override on brand X" rather than "create a new one", call `list_variable_overrides` first to fetch the row ID, then `update_variable_override` instead of `create_variable_override`.
 6. Snippet overrides — same axis logic. Same fixing pattern: if a brand already has an override on a snippet (a frequent case for brands that were created earlier and seeded with stub drafts), `list_snippet_overrides` → `update_snippet_override`. Use `archive_snippet_override` to retire an override the operator no longer wants; `restore_snippet_override` to bring it back.
 
 Surface each tool's result back briefly ("Brand Acme Legal created (id=42)") so the operator can follow along. If a tool returns `isError: true`, **stop the workflow**. Do not proceed to the next step. Branch on the error code:
