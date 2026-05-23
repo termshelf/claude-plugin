@@ -21202,7 +21202,7 @@ var idempotencyInput = {
 };
 var server = new McpServer({
   name: "termshelf",
-  version: "0.10.0"
+  version: "0.11.0"
 });
 server.tool(
   "whoami",
@@ -21432,13 +21432,15 @@ server.tool(
 );
 server.tool(
   "create_variable_override",
-  "Create a workspace-variable override scoped by (locale, optionally brand_id / market_id / site_profile_id). Locale is always required at the domain layer \u2014 the is_locale_agnostic flag on the parent affects publishing, not whether per-locale overrides may exist. Returns the persisted override.",
+  "Create a workspace-variable override scoped by (locale?, brand_id?, market_id?, site_profile_id?). Locale presence depends on the parent's is_locale_agnostic flag: locale-aware parents REQUIRE locale; locale-agnostic parents FORBID it (omit locale and narrow by brand/market/site_profile only \u2014 an axis-only override on a locale-agnostic variable is the way to do per-brand variation for values whose content does not vary by language). Returns the persisted override.",
   {
     variable_id: external_exports.number().int().positive(),
     value: external_exports.string().max(1024).describe(
       "The overridden value. Plain string (max 1024 chars). Nested {{key}} tokens are NOT permitted."
     ),
-    locale: external_exports.string().min(1).max(32).describe("BCP-47-like locale tag, e.g. de or en-GB."),
+    locale: external_exports.string().min(1).max(32).optional().describe(
+      "BCP-47-like locale tag, e.g. de or en-GB. Required for locale-aware parents, FORBIDDEN for is_locale_agnostic parents (omit it in that case)."
+    ),
     ...overrideAxes,
     ...idempotencyInput
   },
@@ -21736,7 +21738,7 @@ server.tool(
 );
 server.tool(
   "update_workspace_variable",
-  "Edit a workspace variable's value, description, or is_locale_agnostic flag. Omitted fields are left untouched. Pass value=null to clear the default (only allowed when at least one override exists); pass description=null to clear the description. Requires `content:write`.",
+  "Edit a workspace variable's value, description, or is_locale_agnostic flag. Omitted fields are left untouched. Pass value=null to clear the default (only allowed when at least one override exists); pass description=null to clear the description. Flipping is_locale_agnostic to TRUE auto-nulls the `locale` column on existing axis-scoped overrides (non-destructive \u2014 they keep applying); it is rejected when locale-only overrides exist (they would collapse into the default). Flipping to FALSE is rejected when null-locale overrides exist (re-author them per-locale first). Requires `content:write`.",
   {
     variable_id: external_exports.number().int().positive(),
     value: external_exports.string().max(1024).nullable().optional(),
