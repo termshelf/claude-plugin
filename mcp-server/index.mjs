@@ -1507,6 +1507,299 @@ server.tool(
     ),
 );
 
+// === Document Intelligence =================================================
+// Read + act on Document Intelligence (drift detection, legal-change impact,
+// website-change) findings and the patch proposals behind them. Reads need the
+// `intelligence:read` ability; actions need `intelligence:manage`. NOTHING here
+// publishes — the action pipeline only ever lands a reviewable, unpublished
+// draft.
+
+const findingId = z
+  .number()
+  .int()
+  .positive()
+  .describe("Document Intelligence finding row ID (see list_document_intelligence_findings).");
+
+const patchId = z
+  .number()
+  .int()
+  .positive()
+  .describe("Patch proposal row ID (from a finding's patch_suggestion, or get_document_intelligence_finding).");
+
+const reasonInput = {
+  reason: z
+    .string()
+    .max(2000)
+    .optional()
+    .describe("Optional human-readable note recorded on the immutable status-history row."),
+};
+
+server.tool(
+  "list_document_intelligence_runs",
+  "List Document Intelligence impact runs in the active workspace (id, status, trigger, site, counters). Use this to find a run, then get_document_intelligence_run for its findings. Soft-cancelled runs are hidden unless you pass status=cancelled. Read-only; requires `intelligence:read`.",
+  {
+    status: z
+      .enum([
+        "pending",
+        "running",
+        "awaiting_profile_approval",
+        "needs_attention",
+        "completed",
+        "completed_with_warnings",
+        "failed",
+        "skipped",
+        "cancelled",
+      ])
+      .optional()
+      .describe("Filter by run status."),
+    site_id: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe("Only runs for this site."),
+    ...paginationInput,
+  },
+  async ({ status, site_id, page, per_page }) => {
+    const params = new URLSearchParams();
+    if (status) params.set("status", status);
+    if (site_id) params.set("site_id", String(site_id));
+    if (page) params.set("page", String(page));
+    if (per_page) params.set("per_page", String(per_page));
+    const qs = params.toString();
+    return asToolResult(
+      await callManagement("GET", `/document-intelligence/runs${qs ? `?${qs}` : ""}`),
+    );
+  },
+);
+
+server.tool(
+  "get_document_intelligence_run",
+  "Fetch one Document Intelligence run with its findings and subject snapshots. Read-only; requires `intelligence:read`.",
+  {
+    run_id: z
+      .number()
+      .int()
+      .positive()
+      .describe("Run row ID (see list_document_intelligence_runs)."),
+  },
+  async ({ run_id }) =>
+    asToolResult(await callManagement("GET", `/document-intelligence/runs/${run_id}`)),
+);
+
+server.tool(
+  "list_document_intelligence_findings",
+  "List Document Intelligence findings — review-worthy HINTS (never legal advice) about how a legal/website change may affect a document. Each carries severity, category, status, confidence, evidence excerpts, and review questions. Open findings sort first. Use this to triage, then get_document_intelligence_finding for the full context. Read-only; requires `intelligence:read`.",
+  {
+    status: z
+      .enum(["open", "acknowledged", "dismissed", "confirmed", "converted_to_draft_later"])
+      .optional()
+      .describe("Filter by review status."),
+    severity: z
+      .enum(["info", "watch", "warning", "critical"])
+      .optional()
+      .describe("Filter by severity hint."),
+    category: z
+      .enum([
+        "potential_legal_change_impact",
+        "missing_or_outdated_clause",
+        "insufficient_information",
+        "document_type_mismatch",
+        "no_action_likely",
+        "needs_human_review",
+      ])
+      .optional()
+      .describe("Filter by finding category."),
+    site_id: z.number().int().positive().optional().describe("Only findings for this site."),
+    document_id: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe("Only findings for this document."),
+    legal_change_event_id: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe("Only findings tied to this legal-change event."),
+    trigger_type: z
+      .enum(["manual", "legal_change_event", "scheduled_later"])
+      .optional()
+      .describe("Filter by the producing run's trigger (e.g. separate automatic findings)."),
+    ...paginationInput,
+  },
+  async ({
+    status,
+    severity,
+    category,
+    site_id,
+    document_id,
+    legal_change_event_id,
+    trigger_type,
+    page,
+    per_page,
+  }) => {
+    const params = new URLSearchParams();
+    if (status) params.set("status", status);
+    if (severity) params.set("severity", severity);
+    if (category) params.set("category", category);
+    if (site_id) params.set("site_id", String(site_id));
+    if (document_id) params.set("document_id", String(document_id));
+    if (legal_change_event_id)
+      params.set("legal_change_event_id", String(legal_change_event_id));
+    if (trigger_type) params.set("trigger_type", trigger_type);
+    if (page) params.set("page", String(page));
+    if (per_page) params.set("per_page", String(per_page));
+    const qs = params.toString();
+    return asToolResult(
+      await callManagement("GET", `/document-intelligence/findings${qs ? `?${qs}` : ""}`),
+    );
+  },
+);
+
+server.tool(
+  "get_document_intelligence_finding",
+  "Fetch one finding with its full context: summary, impact_reason, suggested_action, evidence excerpts, review questions, the immutable status history, and the linked patch suggestion (if any). Read-only; requires `intelligence:read`.",
+  { finding_id: findingId },
+  async ({ finding_id }) =>
+    asToolResult(
+      await callManagement("GET", `/document-intelligence/findings/${finding_id}`),
+    ),
+);
+
+server.tool(
+  "get_finding_patch_suggestion",
+  "Fetch the patch proposal generated for a confirmed finding (changeset before/after, target, rationale, generation_status, draft_preparation_status). Returns 404 if no suggestion exists yet. Read-only; requires `intelligence:read`.",
+  { finding_id: findingId },
+  async ({ finding_id }) =>
+    asToolResult(
+      await callManagement(
+        "GET",
+        `/document-intelligence/findings/${finding_id}/patch-suggestion`,
+      ),
+    ),
+);
+
+server.tool(
+  "acknowledge_finding",
+  "Mark a finding as acknowledged (seen). Valid only from `open`. Requires `intelligence:manage`.",
+  { finding_id: findingId, ...reasonInput },
+  async ({ finding_id, reason }) =>
+    asToolResult(
+      await callManagement(
+        "POST",
+        `/document-intelligence/findings/${finding_id}/acknowledge`,
+        { body: { reason } },
+      ),
+    ),
+);
+
+server.tool(
+  "confirm_finding",
+  "Confirm a finding as worth pursuing. Valid from `open` or `acknowledged`. Confirming is the gate that lets you generate a patch suggestion next. Requires `intelligence:manage`.",
+  { finding_id: findingId, ...reasonInput },
+  async ({ finding_id, reason }) =>
+    asToolResult(
+      await callManagement(
+        "POST",
+        `/document-intelligence/findings/${finding_id}/confirm`,
+        { body: { reason } },
+      ),
+    ),
+);
+
+server.tool(
+  "dismiss_finding",
+  "Dismiss a finding as not relevant. Valid from `open` or `acknowledged`. Requires `intelligence:manage`.",
+  { finding_id: findingId, ...reasonInput },
+  async ({ finding_id, reason }) =>
+    asToolResult(
+      await callManagement(
+        "POST",
+        `/document-intelligence/findings/${finding_id}/dismiss`,
+        { body: { reason } },
+      ),
+    ),
+);
+
+server.tool(
+  "reopen_finding",
+  "Reopen a finding back to `open`. Valid from `acknowledged`, `dismissed`, or `confirmed`. Requires `intelligence:manage`.",
+  { finding_id: findingId, ...reasonInput },
+  async ({ finding_id, reason }) =>
+    asToolResult(
+      await callManagement(
+        "POST",
+        `/document-intelligence/findings/${finding_id}/reopen`,
+        { body: { reason } },
+      ),
+    ),
+);
+
+server.tool(
+  "mark_finding_converted",
+  "Close out a confirmed finding as `converted_to_draft_later` — use this AFTER you have authored a reviewable draft BY HAND (via the authoring tools) for a finding whose patch could not be auto-prepared (draft_preparation_status = blocked). Closes the review loop auditably. Valid only from `confirmed`. Requires `intelligence:manage`.",
+  { finding_id: findingId, ...reasonInput },
+  async ({ finding_id, reason }) =>
+    asToolResult(
+      await callManagement(
+        "POST",
+        `/document-intelligence/findings/${finding_id}/mark-converted`,
+        { body: { reason } },
+      ),
+    ),
+);
+
+server.tool(
+  "generate_patch_suggestion",
+  "Request an LLM-backed change SUGGESTION for a CONFIRMED finding. Generation runs on the server queue (the LLM never runs in-request): a fresh request returns 202 and a `generation_status: pending` patch; poll get_finding_patch_suggestion until `generation_status` is `completed` (or `failed`). Idempotent — re-requesting returns the existing suggestion. The suggestion is NEVER auto-applied and never publishes. Requires `intelligence:manage`.",
+  { finding_id: findingId },
+  async ({ finding_id }) =>
+    asToolResult(
+      await callManagement(
+        "POST",
+        `/document-intelligence/findings/${finding_id}/patch-suggestion`,
+      ),
+    ),
+);
+
+server.tool(
+  "get_patch",
+  "Fetch a patch proposal by ID — the full detail incl. changeset, rationale, generation_status, draft_preparation_status, draft_preparation_target_type, target/scope, and (when blocked) draft_preparation_error / target warnings. Read this to decide whether a patch can be auto-prepared (status will become `prepared`) or must be authored by hand (`blocked`). Read-only; requires `intelligence:read`.",
+  { patch_id: patchId },
+  async ({ patch_id }) =>
+    asToolResult(
+      await callManagement("GET", `/document-intelligence/patches/${patch_id}`),
+    ),
+);
+
+server.tool(
+  "prepare_draft_from_patch",
+  "Ask the server to map a COMPLETED patch suggestion into a new editable, UNPUBLISHED draft (a draft DocumentVersion, or a snippet-override working draft). Runs on the queue; returns 202 then poll get_patch until `draft_preparation_status` is `prepared`, `blocked`, or `failed`. If `prepared`, verify with get_patch_draft_review. If `blocked`, the LLM could not map it safely — author the change yourself via the authoring tools, then mark_finding_converted. NEVER applies to live content and never publishes. Requires `intelligence:manage`.",
+  { patch_id: patchId },
+  async ({ patch_id }) =>
+    asToolResult(
+      await callManagement(
+        "POST",
+        `/document-intelligence/patches/${patch_id}/prepare-draft`,
+      ),
+    ),
+);
+
+server.tool(
+  "get_patch_draft_review",
+  "Fetch the review context for a patch already prepared into a draft: the source-version → prepared-draft diff (or the prepared snippet-override diff), plus the finding/event/evidence behind it. Use this to VERIFY an auto-prepared draft before telling the operator it's ready. Returns 404 if the patch was never prepared. Read-only; requires `intelligence:read`.",
+  { patch_id: patchId },
+  async ({ patch_id }) =>
+    asToolResult(
+      await callManagement(
+        "GET",
+        `/document-intelligence/patches/${patch_id}/draft-review`,
+      ),
+    ),
+);
+
 // --- boot --------------------------------------------------------------------
 
 async function main() {
