@@ -195,7 +195,7 @@ const idempotencyInput = {
 
 const server = new McpServer({
   name: "termshelf",
-  version: "0.11.0",
+  version: "1.0.0",
 });
 
 // === Read tools ============================================================
