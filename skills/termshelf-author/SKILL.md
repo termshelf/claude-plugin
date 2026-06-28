@@ -21,6 +21,8 @@ When this skill is active, Claude Code has these MCP tools available under the `
 **Reads (no side effects, safe to call freely):**
 - `whoami` — confirm auth + see the bound workspace and the token's ability list
 - `list_sites`, `get_site` — existing sites + their domains, markets, profiles
+- `list_markets`, `get_market` — the workspace's markets (variance axis; filter by `status`)
+- `list_site_profiles`, `get_site_profile` — the workspace's site profiles (second variance axis; filter by `status`)
 - `list_workspace_variables`, `get_workspace_variable` — every `{{key}}` placeholder + `is_locale_agnostic` + `overrides_count` + the live draft `value` and the last-published value + `has_unpublished_changes` (true iff the draft would actually persist a new version on publish)
 - `list_workspace_snippets`, `get_workspace_snippet` — reusable rich-text clauses + `working_blocks` (draft) + `published_blocks` + `has_unpublished_changes`
 - `list_locales` — the locale codes currently active in the workspace
@@ -33,6 +35,11 @@ When this skill is active, Claude Code has these MCP tools available under the `
 - `list_document_unpublished_refs` — pre-publish cascade discovery. Given a document and the publication targets the operator is about to publish to, returns the snippets, variables, snippet-overrides and variable-overrides whose working draft differs from the published version. Use this when the operator asks "what drafts are still pending for this document?" — surfaces the same checklist the customer-app's publish page renders. Read-only.
 
 The `has_unpublished_changes` flag is true when the draft would actually persist as a new version on publish (i.e. the canonical hash of `working_blocks` differs from the latest published version's `content_hash`). An empty draft is never dirty, since the publisher refuses to publish it. Use this flag to answer "which authored items are still pending publish?" without diffing JSON blocks yourself.
+
+**Structure writes** (require the `structure:write` ability — confirm with the operator before calling):
+- `create_brand`, `create_site`, `add_domain_to_site`, `attach_market_to_site` — the brand → site → domain → market chain.
+- `create_market`, `update_market`, `activate_market`, `deactivate_market` — market CRUD + lifecycle.
+- `create_site_profile`, `update_site_profile`, `activate_site_profile`, `deactivate_site_profile` — site-profile CRUD + lifecycle.
 
 **Override writes** (require the `overrides:write` ability — always confirm with the operator before calling):
 - `create_variable_override`, `update_variable_override`, `delete_variable_override` — per-locale, per-target value. Delete is a hard-delete; the parent variable still needs at least one value somewhere (default OR override).
@@ -75,7 +82,7 @@ Always call `whoami` first, exactly once at the start. It tells you:
 - which workspace you're operating on
 - which abilities the active token has
 
-If any abilities you need are missing, stop and tell the operator. Required abilities by task: `content:read` for any discovery; `structure:write` for brand/site/domain/market creation; `overrides:write` for override CRUD; `content:write` for authoring workspace-level snippets/variables AND for creating/editing documents, document types, sections, and blocks (every endpoint under the document-drafting workflow). They issue a new token with the right scopes at [Settings → API Tokens](https://app.termshelf.de/app/settings/api-tokens); you do not negotiate around missing ones.
+If any abilities you need are missing, stop and tell the operator. Required abilities by task: `content:read` for any discovery; `structure:write` for brand/site/domain/market/site-profile creation + lifecycle; `overrides:write` for override CRUD; `content:write` for authoring workspace-level snippets/variables AND for creating/editing documents, document types, sections, and blocks (every endpoint under the document-drafting workflow). They issue a new token with the right scopes at [Settings → API Tokens](https://app.termshelf.de/app/settings/api-tokens); you do not negotiate around missing ones.
 
 ### 2. Discover
 
@@ -99,6 +106,19 @@ Before adding `brand_id`, ask: **does the content actually differ across brands 
 - **Yes** (per-brand entity names, contact emails, jurisdictional carve-outs) → scope to `brand_id`.
 
 Creating identical per-brand overrides where one locale-only override would do is a smell: it multiplies the surface to publish, multiplies the audit log, and forces every future content edit to be repeated N times.
+
+### Markets & site profiles — the extra variance axes
+
+`market_id` and `site_profile_id` are two **workspace-scoped variance axes** you can layer on top of (or instead of) `brand_id` and `locale` when scoping an override. They are deliberately generic:
+
+- A **market** groups an audience the same content should vary for — e.g. an EU vs. a CH edition of the same policy. A market is **NOT** a locale, **NOT** a brand, **NOT** a website (site), and **NOT** a scanner/Document-Intelligence target. Its optional `country_code` field is plain **advisory ISO-3166 alpha-2 metadata** (e.g. `DE`, `CH`) that Document Intelligence reads for country targeting — it does **not** drive locale resolution and is never a substitute for `locale`.
+- A **site profile** is a second, parallel axis — e.g. a `b2c` vs. a `b2b` presentation of the same brand. Same rule: not a locale, brand, or website.
+
+**Override scopes compose.** A single override can combine any of `brand_id` + `market_id` + `site_profile_id` + `locale`; the resolver picks the most specific matching tuple and falls back axis-by-axis to the workspace parent. So `(brand + market + locale)` beats `(brand + locale)` beats `(locale)` beats the parent. Add an axis only when the content actually varies along it — the same "broadest scope that fits" discipline as `brand_id` above. `get_document_preview` takes `market_code` / `site_profile_code` so you can verify a market/profile-scoped override the same way you verify a brand-scoped one.
+
+**Managing the axes themselves.** Create or rename a market with `create_market` / `update_market` (`label` is the required human name; `code` is optional **on create** — the server suggests one from the label, and it is immutable afterwards; `country_code` is the optional advisory metadata above). Toggle availability with `activate_market` / `deactivate_market`. Site profiles work identically via `create_site_profile` / `update_site_profile` / `activate_site_profile` / `deactivate_site_profile`. To make a market usable on a particular website, attach it with `attach_market_to_site`. Discover existing axes first with `list_markets` / `list_site_profiles` (filter by `status`) so you reuse an existing one instead of minting a duplicate.
+
+> **Note:** markets and site profiles cannot be hard-deleted via the API — they are referenced by overrides, so deactivate them instead of deleting. Site lifecycle gaps (`update_site`, deleting/archiving a site, detaching a market, removing a domain, attaching/detaching a site profile) are not yet exposed as tools — those operations currently live only in the customer-app SPA. Direct the operator there for them.
 
 > **Contract for `is_locale_agnostic: true` variables.** "Locale-agnostic" means *no per-locale variation* — it does **not** mean "no per-axis variation." Brand, market, and site_profile overrides are allowed; only the locale axis is suppressed.
 > - `create_variable_override` on a locale-agnostic parent **requires** `locale` to be omitted (or `null`) and **requires** at least one of `brand_id` / `market_id` / `site_profile_id` to be set. Setting `locale` is rejected (`validation.failed`); a fully-empty axis tuple is rejected because it would duplicate the workspace default.

@@ -21202,7 +21202,7 @@ var idempotencyInput = {
 };
 var server = new McpServer({
   name: "termshelf",
-  version: "0.11.0"
+  version: "0.12.0"
 });
 server.tool(
   "whoami",
@@ -21306,7 +21306,7 @@ server.tool(
 );
 server.tool(
   "get_document_preview",
-  "Render a document as fully-resolved HTML for a (brand, locale, market, profile) target \u2014 the same Vorschau the customer-app's authoring tab shows. Use this AFTER creating variable/snippet overrides to verify they resolve correctly per (brand, locale): inspect `html` for cross-locale leakage and obvious placeholders, and `unresolved_variables` / `unresolved_snippets` for publish blockers. Omit a target axis to fall back to the workspace default for that axis.",
+  'Render a document as fully-resolved HTML for a (brand, locale, market, profile) target \u2014 the same Vorschau the customer-app\'s authoring tab shows. This is a DRAFT/working-tree preview: it resolves the working draft of the document, of referenced snippets (incl. not-yet-published ones), and of the most-specific matching snippet/variable override DRAFT \u2014 i.e. "what publishing right now would produce". It is NOT what is currently live: live Public Delivery renders only published versions. Use this AFTER creating variable/snippet overrides to verify they resolve correctly per (brand, locale): inspect `html` for cross-locale leakage and obvious placeholders, and `unresolved_variables` / `unresolved_snippets` for publish blockers (a snippet with no draft at all stays unresolved). Omit a target axis to fall back to the workspace default for that axis.',
   {
     document_id: external_exports.number().int().positive().describe("Document row ID (see list_documents)."),
     brand_id: external_exports.number().int().positive().optional().describe(
@@ -21431,6 +21431,187 @@ server.tool(
   )
 );
 server.tool(
+  "list_markets",
+  "List markets in the active workspace \u2014 the workspace-scoped variance axis you can combine with brand/locale/site_profile when scoping overrides. Optionally filter by lifecycle status.",
+  {
+    status: external_exports.enum(["active", "inactive"]).optional().describe("Filter by market lifecycle status."),
+    ...paginationInput
+  },
+  async ({ status, page, per_page }) => {
+    const params = new URLSearchParams();
+    if (status) params.set("status", status);
+    if (page) params.set("page", String(page));
+    if (per_page) params.set("per_page", String(per_page));
+    const qs = params.toString();
+    return asToolResult(
+      await callManagement("GET", `/markets${qs ? `?${qs}` : ""}`)
+    );
+  }
+);
+server.tool(
+  "get_market",
+  "Fetch a single market by ID, including its code, label, optional country_code, and lifecycle status.",
+  { market_id: external_exports.number().int().positive().describe("Market row ID.") },
+  async ({ market_id }) => asToolResult(await callManagement("GET", `/markets/${market_id}`))
+);
+server.tool(
+  "create_market",
+  "Create a new market in the active workspace. `label` (the human name) is required; `code` is optional \u2014 the server suggests one from the label when omitted. Returns the persisted market.",
+  {
+    label: external_exports.string().min(1).max(200).describe("Human display name of the market, e.g. 'European Union' (required)."),
+    code: external_exports.string().max(48).optional().describe(
+      "Optional workspace-unique machine code. The server suggests one from the label if omitted."
+    ),
+    description: external_exports.string().max(2e3).optional().describe("Optional free-text operator description."),
+    country_code: external_exports.string().regex(/^[A-Za-z]{2}$/).optional().describe(
+      "Optional ISO-3166 alpha-2 country code (e.g. 'DE'), uppercased server-side. Advisory metadata for Document Intelligence country targeting \u2014 it is NOT a locale."
+    ),
+    ...idempotencyInput
+  },
+  async ({ idempotency_key, ...body }) => asToolResult(
+    await callManagement("POST", "/markets", {
+      body,
+      idempotencyKey: idempotency_key
+    })
+  )
+);
+server.tool(
+  "update_market",
+  "Edit a market's label, description, or country_code. The code is set at creation and is immutable thereafter (the server ignores it on update). Omitted fields are left untouched. Returns the updated market.",
+  {
+    market_id: external_exports.number().int().positive().describe("Market row ID."),
+    label: external_exports.string().min(1).max(200).optional().describe("Human display name of the market."),
+    description: external_exports.string().max(2e3).optional().describe("Free-text operator description."),
+    country_code: external_exports.string().regex(/^[A-Za-z]{2}$/).optional().describe(
+      "Optional ISO-3166 alpha-2 country code (e.g. 'DE'), uppercased server-side. Advisory metadata for Document Intelligence country targeting \u2014 it is NOT a locale."
+    ),
+    ...idempotencyInput
+  },
+  async ({ market_id, idempotency_key, ...body }) => asToolResult(
+    await callManagement("PATCH", `/markets/${market_id}`, {
+      body,
+      idempotencyKey: idempotency_key
+    })
+  )
+);
+server.tool(
+  "activate_market",
+  "Flip a market to `active` (idempotent). Active markets can be attached to sites and used as an override axis.",
+  {
+    market_id: external_exports.number().int().positive().describe("Market row ID."),
+    ...idempotencyInput
+  },
+  async ({ market_id, idempotency_key }) => asToolResult(
+    await callManagement("POST", `/markets/${market_id}/activate`, {
+      body: {},
+      idempotencyKey: idempotency_key
+    })
+  )
+);
+server.tool(
+  "deactivate_market",
+  "Flip a market to `inactive` (idempotent). Existing overrides scoped to the market remain stored; the market is just no longer offered for new attachments.",
+  {
+    market_id: external_exports.number().int().positive().describe("Market row ID."),
+    ...idempotencyInput
+  },
+  async ({ market_id, idempotency_key }) => asToolResult(
+    await callManagement("POST", `/markets/${market_id}/deactivate`, {
+      body: {},
+      idempotencyKey: idempotency_key
+    })
+  )
+);
+server.tool(
+  "list_site_profiles",
+  "List site profiles in the active workspace \u2014 the second workspace-scoped variance axis. Optionally filter by lifecycle status.",
+  {
+    status: external_exports.enum(["active", "inactive"]).optional().describe("Filter by site-profile lifecycle status."),
+    ...paginationInput
+  },
+  async ({ status, page, per_page }) => {
+    const params = new URLSearchParams();
+    if (status) params.set("status", status);
+    if (page) params.set("page", String(page));
+    if (per_page) params.set("per_page", String(per_page));
+    const qs = params.toString();
+    return asToolResult(
+      await callManagement("GET", `/site-profiles${qs ? `?${qs}` : ""}`)
+    );
+  }
+);
+server.tool(
+  "get_site_profile",
+  "Fetch a single site profile by ID, including its code, label, and lifecycle status.",
+  { site_profile_id: external_exports.number().int().positive().describe("Site profile row ID.") },
+  async ({ site_profile_id }) => asToolResult(
+    await callManagement("GET", `/site-profiles/${site_profile_id}`)
+  )
+);
+server.tool(
+  "create_site_profile",
+  "Create a new site profile in the active workspace. `label` (the human name) is required; `code` is optional \u2014 the server suggests one from the label when omitted. Returns the persisted site profile.",
+  {
+    label: external_exports.string().min(1).max(200).describe("Human display name of the site profile, e.g. 'B2C' (required)."),
+    code: external_exports.string().max(48).optional().describe(
+      "Optional workspace-unique machine code. The server suggests one from the label if omitted."
+    ),
+    description: external_exports.string().max(2e3).optional().describe("Optional free-text operator description."),
+    ...idempotencyInput
+  },
+  async ({ idempotency_key, ...body }) => asToolResult(
+    await callManagement("POST", "/site-profiles", {
+      body,
+      idempotencyKey: idempotency_key
+    })
+  )
+);
+server.tool(
+  "update_site_profile",
+  "Edit a site profile's label or description. The code is set at creation and is immutable thereafter (the server ignores it on update). Omitted fields are left untouched. Returns the updated site profile.",
+  {
+    site_profile_id: external_exports.number().int().positive().describe("Site profile row ID."),
+    label: external_exports.string().min(1).max(200).optional().describe("Human display name of the site profile."),
+    description: external_exports.string().max(2e3).optional().describe("Free-text operator description."),
+    ...idempotencyInput
+  },
+  async ({ site_profile_id, idempotency_key, ...body }) => asToolResult(
+    await callManagement("PATCH", `/site-profiles/${site_profile_id}`, {
+      body,
+      idempotencyKey: idempotency_key
+    })
+  )
+);
+server.tool(
+  "activate_site_profile",
+  "Flip a site profile to `active` (idempotent). Active profiles can be used as an override axis.",
+  {
+    site_profile_id: external_exports.number().int().positive().describe("Site profile row ID."),
+    ...idempotencyInput
+  },
+  async ({ site_profile_id, idempotency_key }) => asToolResult(
+    await callManagement("POST", `/site-profiles/${site_profile_id}/activate`, {
+      body: {},
+      idempotencyKey: idempotency_key
+    })
+  )
+);
+server.tool(
+  "deactivate_site_profile",
+  "Flip a site profile to `inactive` (idempotent). Existing overrides scoped to the profile remain stored; the profile is just no longer offered for new use.",
+  {
+    site_profile_id: external_exports.number().int().positive().describe("Site profile row ID."),
+    ...idempotencyInput
+  },
+  async ({ site_profile_id, idempotency_key }) => asToolResult(
+    await callManagement(
+      "POST",
+      `/site-profiles/${site_profile_id}/deactivate`,
+      { body: {}, idempotencyKey: idempotency_key }
+    )
+  )
+);
+server.tool(
   "create_variable_override",
   "Create a workspace-variable override scoped by (locale?, brand_id?, market_id?, site_profile_id?). Locale presence depends on the parent's is_locale_agnostic flag: locale-aware parents REQUIRE locale; locale-agnostic parents FORBID it (omit locale and narrow by brand/market/site_profile only \u2014 an axis-only override on a locale-agnostic variable is the way to do per-brand variation for values whose content does not vary by language). Returns the persisted override.",
   {
@@ -21457,7 +21638,7 @@ server.tool(
 );
 server.tool(
   "create_snippet_override",
-  "Create a workspace-snippet override scoped by (locale, optionally brand_id / market_id / site_profile_id). If `blocks` is omitted, the server seeds the override's working_blocks from the structurally-closest parent. Pass blocks=[] to force an empty draft. Returns the persisted override.",
+  "Create a workspace-snippet override scoped by (locale, optionally brand_id / market_id / site_profile_id). This writes a DRAFT (working_blocks) only \u2014 it never publishes; an operator publishes the override separately (the MCP cannot publish). The draft is immediately visible in get_document_preview for the matching target, and stays out of live Public Delivery until published. If `blocks` is omitted, the server seeds the override's working_blocks from the structurally-closest parent. Pass blocks=[] to force an empty draft. Returns the persisted override.",
   {
     snippet_id: external_exports.number().int().positive(),
     locale: external_exports.string().min(1).max(32),
@@ -21647,7 +21828,7 @@ server.tool(
 );
 server.tool(
   "create_workspace_snippet",
-  "Create a new workspace snippet. Requires the `content:write` token ability. Optional working_blocks seeds the draft; omit to start with an empty draft.",
+  "Create a new workspace snippet. Requires the `content:write` token ability. The snippet starts as a DRAFT (working_blocks) with no published version \u2014 that is expected and fine: a document block may reference it right away (see upsert_document_block) and get_document_preview resolves the draft. It only appears in live Public Delivery after an operator publishes it; the MCP cannot publish. Optional working_blocks seeds the draft; omit to start with an empty draft.",
   {
     key: external_exports.string().min(1).max(64).describe("Workspace-unique key, referenced from document blocks."),
     title: external_exports.string().min(1).max(255),
@@ -22092,7 +22273,7 @@ server.tool(
 );
 server.tool(
   "upsert_document_block",
-  "Create-or-update a document block by stable `key`. The `key` is unique per document \u2014 moving a block to a different section is allowed by passing the new section's id. `kind` controls payload validation; the supported kinds are: heading, paragraph, list, note, table, image, snippet_reference. Payload shapes are kind-specific (see below). Variable references like `{{key}}` inside text are validated against the workspace's variables. Snippet references must point to a published snippet. Requires `content:write`.",
+  "Create-or-update a document block by stable `key`. The `key` is unique per document \u2014 moving a block to a different section is allowed by passing the new section's id. `kind` controls payload validation; the supported kinds are: heading, paragraph, list, note, table, image, snippet_reference. Payload shapes are kind-specific (see below). Variable references like `{{key}}` inside text are validated against the workspace's variables. A snippet_reference may point to a NOT-YET-PUBLISHED (draft) workspace snippet \u2014 this is intentional so a document can be brought to a publishable state in one authoring pass; the snippet only needs to exist and not be archived. Draft previews (get_document_preview) resolve the snippet's draft content; live Public Delivery renders it only once an operator publishes the snippet (the MCP cannot publish). Requires `content:write`.",
   {
     document_id: external_exports.number().int().positive(),
     section_id: external_exports.number().int().positive().describe("Target section id."),
@@ -22108,7 +22289,7 @@ server.tool(
       "image",
       "snippet_reference"
     ]).describe(
-      "Block kind. Payload schema:\n  heading            -> { text: string, level?: 1-6 (default 2), inlines?: list }\n  paragraph          -> { text: string, inlines?: list }\n  list               -> { items: list<string>, style?: 'bullet'|'ordered', item_inlines?: list }\n  note               -> { text: string, severity?: 'info'|'warning' (default 'info'), inlines?: list }\n  table              -> { rows: list<list<string>>, header?: bool, cell_inlines?: list, cell_attrs?: list }\n  image              -> { src: absolute http(s) URL, alt?: string, title?: string }\n  snippet_reference  -> { snippet_id: int (must point to a published workspace snippet) }"
+      "Block kind. Payload schema:\n  heading            -> { text: string, level?: 1-6 (default 2), inlines?: list }\n  paragraph          -> { text: string, inlines?: list }\n  list               -> { items: list<string>, style?: 'bullet'|'ordered', item_inlines?: list }\n  note               -> { text: string, severity?: 'info'|'warning' (default 'info'), inlines?: list }\n  table              -> { rows: list<list<string>>, header?: bool, cell_inlines?: list, cell_attrs?: list }\n  image              -> { src: absolute http(s) URL, alt?: string, title?: string }\n  snippet_reference  -> { snippet_id: int (a workspace snippet that exists and is not archived; it may still be a draft/unpublished \u2014 preview resolves the draft, live delivery needs an operator publish) }"
     ),
     payload: external_exports.record(external_exports.string(), external_exports.unknown()).describe(
       "Default-locale (document's `default_locale_code`) payload. Kind-specific schema (see the `kind` description). Unknown fields are rejected."
@@ -22159,6 +22340,217 @@ server.tool(
       "POST",
       `/documents/${document_id}/sections/${section_id}/blocks/reorder`,
       { body: { ordered_keys }, idempotencyKey: idempotency_key }
+    )
+  )
+);
+var findingId = external_exports.number().int().positive().describe("Document Intelligence finding row ID (see list_document_intelligence_findings).");
+var patchId = external_exports.number().int().positive().describe("Patch proposal row ID (from a finding's patch_suggestion, or get_document_intelligence_finding).");
+var reasonInput = {
+  reason: external_exports.string().max(2e3).optional().describe("Optional human-readable note recorded on the immutable status-history row.")
+};
+server.tool(
+  "list_document_intelligence_runs",
+  "List Document Intelligence impact runs in the active workspace (id, status, trigger, site, counters). Use this to find a run, then get_document_intelligence_run for its findings. Soft-cancelled runs are hidden unless you pass status=cancelled. Read-only; requires `intelligence:read`.",
+  {
+    status: external_exports.enum([
+      "pending",
+      "running",
+      "awaiting_profile_approval",
+      "needs_attention",
+      "completed",
+      "completed_with_warnings",
+      "failed",
+      "skipped",
+      "cancelled"
+    ]).optional().describe("Filter by run status."),
+    site_id: external_exports.number().int().positive().optional().describe("Only runs for this site."),
+    ...paginationInput
+  },
+  async ({ status, site_id, page, per_page }) => {
+    const params = new URLSearchParams();
+    if (status) params.set("status", status);
+    if (site_id) params.set("site_id", String(site_id));
+    if (page) params.set("page", String(page));
+    if (per_page) params.set("per_page", String(per_page));
+    const qs = params.toString();
+    return asToolResult(
+      await callManagement("GET", `/document-intelligence/runs${qs ? `?${qs}` : ""}`)
+    );
+  }
+);
+server.tool(
+  "get_document_intelligence_run",
+  "Fetch one Document Intelligence run with its findings and subject snapshots. Read-only; requires `intelligence:read`.",
+  {
+    run_id: external_exports.number().int().positive().describe("Run row ID (see list_document_intelligence_runs).")
+  },
+  async ({ run_id }) => asToolResult(await callManagement("GET", `/document-intelligence/runs/${run_id}`))
+);
+server.tool(
+  "list_document_intelligence_findings",
+  "List Document Intelligence findings \u2014 review-worthy HINTS (never legal advice) about how a legal/website change may affect a document. Each carries severity, category, status, confidence, evidence excerpts, and review questions. Open findings sort first. Use this to triage, then get_document_intelligence_finding for the full context. Read-only; requires `intelligence:read`.",
+  {
+    status: external_exports.enum(["open", "acknowledged", "dismissed", "confirmed", "converted_to_draft_later"]).optional().describe("Filter by review status."),
+    severity: external_exports.enum(["info", "watch", "warning", "critical"]).optional().describe("Filter by severity hint."),
+    category: external_exports.enum([
+      "potential_legal_change_impact",
+      "missing_or_outdated_clause",
+      "insufficient_information",
+      "document_type_mismatch",
+      "no_action_likely",
+      "needs_human_review"
+    ]).optional().describe("Filter by finding category."),
+    site_id: external_exports.number().int().positive().optional().describe("Only findings for this site."),
+    document_id: external_exports.number().int().positive().optional().describe("Only findings for this document."),
+    legal_change_event_id: external_exports.number().int().positive().optional().describe("Only findings tied to this legal-change event."),
+    trigger_type: external_exports.enum(["manual", "legal_change_event", "scheduled_later"]).optional().describe("Filter by the producing run's trigger (e.g. separate automatic findings)."),
+    ...paginationInput
+  },
+  async ({
+    status,
+    severity,
+    category,
+    site_id,
+    document_id,
+    legal_change_event_id,
+    trigger_type,
+    page,
+    per_page
+  }) => {
+    const params = new URLSearchParams();
+    if (status) params.set("status", status);
+    if (severity) params.set("severity", severity);
+    if (category) params.set("category", category);
+    if (site_id) params.set("site_id", String(site_id));
+    if (document_id) params.set("document_id", String(document_id));
+    if (legal_change_event_id)
+      params.set("legal_change_event_id", String(legal_change_event_id));
+    if (trigger_type) params.set("trigger_type", trigger_type);
+    if (page) params.set("page", String(page));
+    if (per_page) params.set("per_page", String(per_page));
+    const qs = params.toString();
+    return asToolResult(
+      await callManagement("GET", `/document-intelligence/findings${qs ? `?${qs}` : ""}`)
+    );
+  }
+);
+server.tool(
+  "get_document_intelligence_finding",
+  "Fetch one finding with its full context: summary, impact_reason, suggested_action, evidence excerpts, review questions, the immutable status history, and the linked patch suggestion (if any). Read-only; requires `intelligence:read`.",
+  { finding_id: findingId },
+  async ({ finding_id }) => asToolResult(
+    await callManagement("GET", `/document-intelligence/findings/${finding_id}`)
+  )
+);
+server.tool(
+  "get_finding_patch_suggestion",
+  "Fetch the patch proposal generated for a confirmed finding (changeset before/after, target, rationale, generation_status, draft_preparation_status). Returns 404 if no suggestion exists yet. Read-only; requires `intelligence:read`.",
+  { finding_id: findingId },
+  async ({ finding_id }) => asToolResult(
+    await callManagement(
+      "GET",
+      `/document-intelligence/findings/${finding_id}/patch-suggestion`
+    )
+  )
+);
+server.tool(
+  "acknowledge_finding",
+  "Mark a finding as acknowledged (seen). Valid only from `open`. Requires `intelligence:manage`.",
+  { finding_id: findingId, ...reasonInput },
+  async ({ finding_id, reason }) => asToolResult(
+    await callManagement(
+      "POST",
+      `/document-intelligence/findings/${finding_id}/acknowledge`,
+      { body: { reason } }
+    )
+  )
+);
+server.tool(
+  "confirm_finding",
+  "Confirm a finding as worth pursuing. Valid from `open` or `acknowledged`. Confirming is the gate that lets you generate a patch suggestion next. Requires `intelligence:manage`.",
+  { finding_id: findingId, ...reasonInput },
+  async ({ finding_id, reason }) => asToolResult(
+    await callManagement(
+      "POST",
+      `/document-intelligence/findings/${finding_id}/confirm`,
+      { body: { reason } }
+    )
+  )
+);
+server.tool(
+  "dismiss_finding",
+  "Dismiss a finding as not relevant. Valid from `open` or `acknowledged`. Requires `intelligence:manage`.",
+  { finding_id: findingId, ...reasonInput },
+  async ({ finding_id, reason }) => asToolResult(
+    await callManagement(
+      "POST",
+      `/document-intelligence/findings/${finding_id}/dismiss`,
+      { body: { reason } }
+    )
+  )
+);
+server.tool(
+  "reopen_finding",
+  "Reopen a finding back to `open`. Valid from `acknowledged`, `dismissed`, or `confirmed`. Requires `intelligence:manage`.",
+  { finding_id: findingId, ...reasonInput },
+  async ({ finding_id, reason }) => asToolResult(
+    await callManagement(
+      "POST",
+      `/document-intelligence/findings/${finding_id}/reopen`,
+      { body: { reason } }
+    )
+  )
+);
+server.tool(
+  "mark_finding_converted",
+  "Close out a confirmed finding as `converted_to_draft_later` \u2014 use this AFTER you have authored a reviewable draft BY HAND (via the authoring tools) for a finding whose patch could not be auto-prepared (draft_preparation_status = blocked). Closes the review loop auditably. Valid only from `confirmed`. Requires `intelligence:manage`.",
+  { finding_id: findingId, ...reasonInput },
+  async ({ finding_id, reason }) => asToolResult(
+    await callManagement(
+      "POST",
+      `/document-intelligence/findings/${finding_id}/mark-converted`,
+      { body: { reason } }
+    )
+  )
+);
+server.tool(
+  "generate_patch_suggestion",
+  "Request an LLM-backed change SUGGESTION for a CONFIRMED finding. Generation runs on the server queue (the LLM never runs in-request): a fresh request returns 202 and a `generation_status: pending` patch; poll get_finding_patch_suggestion until `generation_status` is `completed` (or `failed`). Idempotent \u2014 re-requesting returns the existing suggestion. The suggestion is NEVER auto-applied and never publishes. Requires `intelligence:manage`.",
+  { finding_id: findingId },
+  async ({ finding_id }) => asToolResult(
+    await callManagement(
+      "POST",
+      `/document-intelligence/findings/${finding_id}/patch-suggestion`
+    )
+  )
+);
+server.tool(
+  "get_patch",
+  "Fetch a patch proposal by ID \u2014 the full detail incl. changeset, rationale, generation_status, draft_preparation_status, draft_preparation_target_type, target/scope, and (when blocked) draft_preparation_error / target warnings. Read this to decide whether a patch can be auto-prepared (status will become `prepared`) or must be authored by hand (`blocked`). Read-only; requires `intelligence:read`.",
+  { patch_id: patchId },
+  async ({ patch_id }) => asToolResult(
+    await callManagement("GET", `/document-intelligence/patches/${patch_id}`)
+  )
+);
+server.tool(
+  "prepare_draft_from_patch",
+  "Ask the server to map a COMPLETED patch suggestion into a new editable, UNPUBLISHED draft (a draft DocumentVersion, or a snippet-override working draft). Runs on the queue; returns 202 then poll get_patch until `draft_preparation_status` is `prepared`, `blocked`, or `failed`. If `prepared`, verify with get_patch_draft_review. If `blocked`, the LLM could not map it safely \u2014 author the change yourself via the authoring tools, then mark_finding_converted. NEVER applies to live content and never publishes. Requires `intelligence:manage`.",
+  { patch_id: patchId },
+  async ({ patch_id }) => asToolResult(
+    await callManagement(
+      "POST",
+      `/document-intelligence/patches/${patch_id}/prepare-draft`
+    )
+  )
+);
+server.tool(
+  "get_patch_draft_review",
+  "Fetch the review context for a patch already prepared into a draft: the source-version \u2192 prepared-draft diff (or the prepared snippet-override diff), plus the finding/event/evidence behind it. Use this to VERIFY an auto-prepared draft before telling the operator it's ready. Returns 404 if the patch was never prepared. Read-only; requires `intelligence:read`.",
+  { patch_id: patchId },
+  async ({ patch_id }) => asToolResult(
+    await callManagement(
+      "GET",
+      `/document-intelligence/patches/${patch_id}/draft-review`
     )
   )
 );

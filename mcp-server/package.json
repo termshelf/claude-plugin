@@ -1,6 +1,6 @@
 {
   "name": "@termshelf/mcp-server",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "MCP server for the TermShelf external management API. Lets Claude Code create brands, sites, domains, and per-locale overrides programmatically.",
   "private": true,
   "type": "module",
