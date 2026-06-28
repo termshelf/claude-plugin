@@ -82,8 +82,8 @@ All write tools accept an optional `idempotency_key` parameter that forwards to 
 | `create_site` | Create a site linked to an existing brand | `structure:write` |
 | `add_domain_to_site` | Attach a hostname (optionally primary) to a site | `structure:write` |
 | `attach_market_to_site` | Attach an existing market to a site | `structure:write` |
-| `create_market`, `update_market`, `activate_market`, `deactivate_market` | Market CRUD + lifecycle. `label` required on create; `code` optional (server suggests from label); `country_code` optional ISO-3166 alpha-2 advisory metadata for Document Intelligence (NOT a locale) | `structure:write` |
-| `create_site_profile`, `update_site_profile`, `activate_site_profile`, `deactivate_site_profile` | Site-profile CRUD + lifecycle. `label` required on create; `code` optional (server suggests from label) | `structure:write` |
+| `create_market`, `update_market`, `activate_market`, `deactivate_market` | Market CRUD + lifecycle. `code` + `label` required on create; `code` is immutable afterwards (not editable via `update_market`); `country_code` optional ISO-3166 alpha-2 advisory metadata for Document Intelligence (NOT a locale). No delete — deactivate instead | `structure:write` |
+| `create_site_profile`, `update_site_profile`, `activate_site_profile`, `deactivate_site_profile` | Site-profile CRUD + lifecycle. `code` + `label` required on create; `code` is immutable afterwards. No delete — deactivate instead | `structure:write` |
 | `create_variable_override`, `update_variable_override`, `delete_variable_override` | Per-locale value overrides for a workspace variable | `overrides:write` |
 | `create_snippet_override`, `update_snippet_override`, `archive_snippet_override`, `restore_snippet_override` | Per-locale rich-text overrides for a workspace snippet | `overrides:write` |
 | `create_workspace_variable`, `update_workspace_variable`, `delete_workspace_variable` | Workspace-level variable CRUD | `content:write` |

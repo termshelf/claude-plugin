@@ -547,6 +547,245 @@ server.tool(
     ),
 );
 
+// === Markets ===============================================================
+// Markets are commercial/legal regions (DE, AT, …), NOT locales. They are an
+// override axis for documents (snippet/variable overrides carry market_id) and
+// are attached to sites via attach_market_to_site. Read = structure:read,
+// write = structure:write. There is no delete — markets are deactivated.
+
+server.tool(
+  "list_markets",
+  "List markets in the active workspace, ordered by code. Use this to discover market `id` + `code` for scoping overrides (create_variable_override / create_snippet_override `market_id`) and document previews (`market_code`). Paginated; optional status filter. Requires `structure:read`.",
+  {
+    status: z
+      .enum(["active", "inactive"])
+      .optional()
+      .describe("Filter by market status."),
+    ...paginationInput,
+  },
+  async ({ status, page, per_page }) => {
+    const params = new URLSearchParams();
+    if (status) params.set("status", status);
+    if (page) params.set("page", String(page));
+    if (per_page) params.set("per_page", String(per_page));
+    const qs = params.toString();
+    return asToolResult(
+      await callManagement("GET", `/markets${qs ? `?${qs}` : ""}`),
+    );
+  },
+);
+
+server.tool(
+  "get_market",
+  "Fetch a single market by ID. Requires `structure:read`.",
+  {
+    market_id: z.number().int().positive().describe("Market row ID."),
+  },
+  async ({ market_id }) =>
+    asToolResult(await callManagement("GET", `/markets/${market_id}`)),
+);
+
+server.tool(
+  "create_market",
+  "Create a market in the active workspace. `code` is the stable, workspace-unique identifier (immutable afterwards) used to scope sites/overrides; `label` is the human name. Requires `structure:write`.",
+  {
+    code: z
+      .string()
+      .min(1)
+      .max(32)
+      .describe("Workspace-unique, immutable market code (e.g. DE, AT)."),
+    label: z.string().min(1).max(255).describe("Human-readable market name."),
+    description: z.string().max(2000).optional(),
+    country_code: z
+      .string()
+      .regex(/^[A-Za-z]{2}$/)
+      .optional()
+      .describe("Optional ISO 3166-1 alpha-2 country code (advisory metadata)."),
+    active: z
+      .boolean()
+      .optional()
+      .describe("Create as active (default) or inactive."),
+    ...idempotencyInput,
+  },
+  async ({ idempotency_key, ...body }) =>
+    asToolResult(
+      await callManagement("POST", "/markets", {
+        body,
+        idempotencyKey: idempotency_key,
+      }),
+    ),
+);
+
+server.tool(
+  "update_market",
+  "Update a market's label / description / country_code. The `code` is immutable and cannot be changed. Requires `structure:write`.",
+  {
+    market_id: z.number().int().positive(),
+    label: z.string().min(1).max(255).optional(),
+    description: z.string().max(2000).nullable().optional().describe("Pass null to clear."),
+    country_code: z
+      .string()
+      .regex(/^[A-Za-z]{2}$/)
+      .nullable()
+      .optional()
+      .describe("ISO 3166-1 alpha-2 country code; pass null to clear."),
+    ...idempotencyInput,
+  },
+  async ({ market_id, idempotency_key, ...body }) =>
+    asToolResult(
+      await callManagement("PATCH", `/markets/${market_id}`, {
+        body,
+        idempotencyKey: idempotency_key,
+      }),
+    ),
+);
+
+server.tool(
+  "activate_market",
+  "Activate a market so it can be attached to sites and used as an override axis. Requires `structure:write`.",
+  {
+    market_id: z.number().int().positive(),
+    ...idempotencyInput,
+  },
+  async ({ market_id, idempotency_key }) =>
+    asToolResult(
+      await callManagement("POST", `/markets/${market_id}/activate`, {
+        body: {},
+        idempotencyKey: idempotency_key,
+      }),
+    ),
+);
+
+server.tool(
+  "deactivate_market",
+  "Deactivate a market (soft-disable; markets are never deleted). Requires `structure:write`.",
+  {
+    market_id: z.number().int().positive(),
+    ...idempotencyInput,
+  },
+  async ({ market_id, idempotency_key }) =>
+    asToolResult(
+      await callManagement("POST", `/markets/${market_id}/deactivate`, {
+        body: {},
+        idempotencyKey: idempotency_key,
+      }),
+    ),
+);
+
+// === Site profiles =========================================================
+// Site profiles are explicit applicability flavours (B2C, B2B, …) — an override
+// axis for documents (snippet/variable overrides carry site_profile_id; previews
+// take site_profile_code). They are workspace-global (not attached per site).
+// Read = structure:read, write = structure:write. No delete — deactivate instead.
+
+server.tool(
+  "list_site_profiles",
+  "List site profiles in the active workspace, ordered by code. Use this to discover profile `id` + `code` for scoping overrides (`site_profile_id`) and document previews (`site_profile_code`). Paginated; optional status filter. Requires `structure:read`.",
+  {
+    status: z
+      .enum(["active", "inactive"])
+      .optional()
+      .describe("Filter by site-profile status."),
+    ...paginationInput,
+  },
+  async ({ status, page, per_page }) => {
+    const params = new URLSearchParams();
+    if (status) params.set("status", status);
+    if (page) params.set("page", String(page));
+    if (per_page) params.set("per_page", String(per_page));
+    const qs = params.toString();
+    return asToolResult(
+      await callManagement("GET", `/site-profiles${qs ? `?${qs}` : ""}`),
+    );
+  },
+);
+
+server.tool(
+  "get_site_profile",
+  "Fetch a single site profile by ID. Requires `structure:read`.",
+  {
+    site_profile_id: z.number().int().positive().describe("Site profile row ID."),
+  },
+  async ({ site_profile_id }) =>
+    asToolResult(await callManagement("GET", `/site-profiles/${site_profile_id}`)),
+);
+
+server.tool(
+  "create_site_profile",
+  "Create a site profile in the active workspace. `code` is the stable, workspace-unique identifier (immutable afterwards) used to scope overrides; `label` is the human name. Requires `structure:write`.",
+  {
+    code: z
+      .string()
+      .min(1)
+      .max(32)
+      .describe("Workspace-unique, immutable profile code (e.g. b2c, b2b)."),
+    label: z.string().min(1).max(255).describe("Human-readable profile name."),
+    description: z.string().max(5000).optional(),
+    active: z
+      .boolean()
+      .optional()
+      .describe("Create as active (default) or inactive."),
+    ...idempotencyInput,
+  },
+  async ({ idempotency_key, ...body }) =>
+    asToolResult(
+      await callManagement("POST", "/site-profiles", {
+        body,
+        idempotencyKey: idempotency_key,
+      }),
+    ),
+);
+
+server.tool(
+  "update_site_profile",
+  "Update a site profile's label / description. The `code` is immutable and cannot be changed. Requires `structure:write`.",
+  {
+    site_profile_id: z.number().int().positive(),
+    label: z.string().min(1).max(255).optional(),
+    description: z.string().max(5000).nullable().optional().describe("Pass null to clear."),
+    ...idempotencyInput,
+  },
+  async ({ site_profile_id, idempotency_key, ...body }) =>
+    asToolResult(
+      await callManagement("PATCH", `/site-profiles/${site_profile_id}`, {
+        body,
+        idempotencyKey: idempotency_key,
+      }),
+    ),
+);
+
+server.tool(
+  "activate_site_profile",
+  "Activate a site profile so it can be used as an override axis. Requires `structure:write`.",
+  {
+    site_profile_id: z.number().int().positive(),
+    ...idempotencyInput,
+  },
+  async ({ site_profile_id, idempotency_key }) =>
+    asToolResult(
+      await callManagement("POST", `/site-profiles/${site_profile_id}/activate`, {
+        body: {},
+        idempotencyKey: idempotency_key,
+      }),
+    ),
+);
+
+server.tool(
+  "deactivate_site_profile",
+  "Deactivate a site profile (soft-disable; profiles are never deleted). Requires `structure:write`.",
+  {
+    site_profile_id: z.number().int().positive(),
+    ...idempotencyInput,
+  },
+  async ({ site_profile_id, idempotency_key }) =>
+    asToolResult(
+      await callManagement("POST", `/site-profiles/${site_profile_id}/deactivate`, {
+        body: {},
+        idempotencyKey: idempotency_key,
+      }),
+    ),
+);
+
 server.tool(
   "create_variable_override",
   "Create a workspace-variable override scoped by (locale?, brand_id?, market_id?, site_profile_id?). Locale presence depends on the parent's is_locale_agnostic flag: locale-aware parents REQUIRE locale; locale-agnostic parents FORBID it (omit locale and narrow by brand/market/site_profile only — an axis-only override on a locale-agnostic variable is the way to do per-brand variation for values whose content does not vary by language). Returns the persisted override.",
