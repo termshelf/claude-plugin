@@ -21431,6 +21431,46 @@ server.tool(
   )
 );
 server.tool(
+  "detach_market_from_site",
+  "Detach a market from a site. Idempotent \u2014 detaching an already-detached market is a no-op. Does NOT delete the market itself. Returns the updated site detail. Requires `structure:write`.",
+  {
+    site_id: external_exports.number().int().positive(),
+    market_id: external_exports.number().int().positive()
+  },
+  async ({ site_id, market_id }) => asToolResult(
+    await callManagement("DELETE", `/sites/${site_id}/markets/${market_id}`)
+  )
+);
+server.tool(
+  "attach_site_profile_to_site",
+  "Attach an existing site profile (e.g. b2b, b2c) to a site so the site declares it as a SUPPORTED profile. Required before a profile-scoped publish target (e.g. terms_of_service + profile=b2b) can be created \u2014 without it the publish is rejected. Idempotent at the domain layer. Returns the updated site detail with the profiles array populated. Requires `structure:write`.",
+  {
+    site_id: external_exports.number().int().positive(),
+    site_profile_id: external_exports.number().int().positive(),
+    ...idempotencyInput
+  },
+  async ({ site_id, site_profile_id, idempotency_key }) => asToolResult(
+    await callManagement("POST", `/sites/${site_id}/profiles`, {
+      body: { site_profile_id },
+      idempotencyKey: idempotency_key
+    })
+  )
+);
+server.tool(
+  "detach_site_profile_from_site",
+  "Detach a site profile from a site. Idempotent \u2014 detaching an already-detached profile is a no-op. Does NOT delete the profile itself. Returns the updated site detail. Requires `structure:write`.",
+  {
+    site_id: external_exports.number().int().positive(),
+    site_profile_id: external_exports.number().int().positive()
+  },
+  async ({ site_id, site_profile_id }) => asToolResult(
+    await callManagement(
+      "DELETE",
+      `/sites/${site_id}/profiles/${site_profile_id}`
+    )
+  )
+);
+server.tool(
   "list_markets",
   "List markets in the active workspace, ordered by code. Use this to discover market `id` + `code` for scoping overrides (create_variable_override / create_snippet_override `market_id`) and document previews (`market_code`). Paginated; optional status filter. Requires `structure:read`.",
   {
@@ -22268,7 +22308,7 @@ server.tool(
 );
 server.tool(
   "upsert_document_block",
-  "Create-or-update a document block by stable `key`. The `key` is unique per document \u2014 moving a block to a different section is allowed by passing the new section's id. `kind` controls payload validation; the supported kinds are: heading, paragraph, list, note, table, image, snippet_reference. Payload shapes are kind-specific (see below). Variable references like `{{key}}` inside text are validated against the workspace's variables. Snippet references must point to a published snippet. Requires `content:write`.",
+  "Create-or-update a document block by stable `key`. The `key` is unique per document \u2014 moving a block to a different section is allowed by passing the new section's id. `kind` controls payload validation; the supported kinds are: heading, paragraph, list, note, table, image, snippet_reference. Payload shapes are kind-specific (see below). Variable references like `{{key}}` inside text are validated against the workspace's variables. A `snippet_reference` MAY point to a not-yet-published DRAFT snippet \u2014 it only needs to exist and not be archived (preview resolves the draft; live delivery needs an operator publish \u2014 the MCP cannot publish). Requires `content:write`.",
   {
     document_id: external_exports.number().int().positive(),
     section_id: external_exports.number().int().positive().describe("Target section id."),
@@ -22284,7 +22324,7 @@ server.tool(
       "image",
       "snippet_reference"
     ]).describe(
-      "Block kind. Payload schema:\n  heading            -> { text: string, level?: 1-6 (default 2), inlines?: list }\n  paragraph          -> { text: string, inlines?: list }\n  list               -> { items: list<string>, style?: 'bullet'|'ordered', item_inlines?: list }\n  note               -> { text: string, severity?: 'info'|'warning' (default 'info'), inlines?: list }\n  table              -> { rows: list<list<string>>, header?: bool, cell_inlines?: list, cell_attrs?: list }\n  image              -> { src: absolute http(s) URL, alt?: string, title?: string }\n  snippet_reference  -> { snippet_id: int (must point to a published workspace snippet) }"
+      "Block kind. Payload schema:\n  heading            -> { text: string, level?: 1-6 (default 2), inlines?: list }\n  paragraph          -> { text: string, inlines?: list }\n  list               -> { items: list<string>, style?: 'bullet'|'ordered', item_inlines?: list }\n  note               -> { text: string, severity?: 'info'|'warning' (default 'info'), inlines?: list }\n  table              -> { rows: list<list<string>>, header?: bool, cell_inlines?: list, cell_attrs?: list }\n  image              -> { src: absolute http(s) URL, alt?: string, title?: string }\n  snippet_reference  -> { snippet_id: int (may reference a not-yet-published DRAFT snippet; only needs to exist and not be archived) }"
     ),
     payload: external_exports.record(external_exports.string(), external_exports.unknown()).describe(
       "Default-locale (document's `default_locale_code`) payload. Kind-specific schema (see the `kind` description). Unknown fields are rejected."

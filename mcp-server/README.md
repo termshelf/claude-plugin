@@ -81,7 +81,8 @@ All write tools accept an optional `idempotency_key` parameter that forwards to 
 | `create_brand` | Create a brand in the active workspace | `structure:write` |
 | `create_site` | Create a site linked to an existing brand | `structure:write` |
 | `add_domain_to_site` | Attach a hostname (optionally primary) to a site | `structure:write` |
-| `attach_market_to_site` | Attach an existing market to a site | `structure:write` |
+| `attach_market_to_site`, `detach_market_from_site` | Attach / detach an existing market to/from a site (detach is idempotent; does not delete the market) | `structure:write` |
+| `attach_site_profile_to_site`, `detach_site_profile_from_site` | Attach / detach an existing site profile (e.g. b2b, b2c) to/from a site. Attach is **required before a profile-scoped publish target** (e.g. terms_of_service + profile=b2b) can be created — otherwise the publish is rejected (ADR-108) | `structure:write` |
 | `create_market`, `update_market`, `activate_market`, `deactivate_market` | Market CRUD + lifecycle. `code` + `label` required on create; `code` is immutable afterwards (not editable via `update_market`); `country_code` optional ISO-3166 alpha-2 advisory metadata for Document Intelligence (NOT a locale). No delete — deactivate instead | `structure:write` |
 | `create_site_profile`, `update_site_profile`, `activate_site_profile`, `deactivate_site_profile` | Site-profile CRUD + lifecycle. `code` + `label` required on create; `code` is immutable afterwards. No delete — deactivate instead | `structure:write` |
 | `create_variable_override`, `update_variable_override`, `delete_variable_override` | Per-locale value overrides for a workspace variable | `overrides:write` |
