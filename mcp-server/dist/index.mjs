@@ -21202,7 +21202,7 @@ var idempotencyInput = {
 };
 var server = new McpServer({
   name: "termshelf",
-  version: "2.1.0"
+  version: "2.2.0"
 });
 server.tool(
   "whoami",
