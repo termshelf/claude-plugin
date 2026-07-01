@@ -37,7 +37,7 @@ When this skill is active, Claude Code has these MCP tools available under the `
 The `has_unpublished_changes` flag is true when the draft would actually persist as a new version on publish (i.e. the canonical hash of `working_blocks` differs from the latest published version's `content_hash`). An empty draft is never dirty, since the publisher refuses to publish it. Use this flag to answer "which authored items are still pending publish?" without diffing JSON blocks yourself.
 
 **Structure writes** (require the `structure:write` ability — confirm with the operator before calling):
-- `create_brand`, `create_site`, `add_domain_to_site`, `attach_market_to_site` — the brand → site → domain → market chain.
+- `create_brand`, `create_site`, `add_domain_to_site`, `attach_market_to_site` — the brand → site → domain → market chain. **Brands** are the plan's headline unit (`active_brands.max`); **sites** are websites and count separately as *monitored websites* (`monitored_websites.max`, the WebsiteChange/scan cost driver). A site is optional: a brand can author, publish and deliver documents without any website (delivery is then addressed by brand). Only active (non-archived) brands/websites count toward their limits.
 - `create_market`, `update_market`, `activate_market`, `deactivate_market` — market CRUD + lifecycle.
 - `create_site_profile`, `update_site_profile`, `activate_site_profile`, `deactivate_site_profile` — site-profile CRUD + lifecycle.
 
@@ -49,7 +49,8 @@ The `has_unpublished_changes` flag is true when the draft would actually persist
 - `create_workspace_snippet`, `update_workspace_snippet`, `archive_workspace_snippet`, `restore_workspace_snippet`
 - `create_workspace_variable`, `update_workspace_variable`, `delete_workspace_variable`
 - `create_document_type`, `update_document_type`, `activate_document_type`, `deactivate_document_type` — the taxonomy a document attaches to. The `code` is immutable once persisted.
-- `create_document`, `update_document`, `archive_document`, `restore_document`, `delete_document` — the document row itself. `create_document` only stages the document; sections and blocks are authored separately. `delete_document` is rejected when publications / active reviews / pending patches still reference the document — archive instead in that case.
+- `create_document`, `update_document`, `archive_document`, `restore_document`, `delete_document` — the document row itself. `create_document` only stages the document; sections and blocks are authored separately. `create_document` takes an optional `brand_id` to HARD-PIN the document to one brand (ADR-107, whole-document brand divergence); documents are NOT website-bound (no `site_id`). `delete_document` is rejected when publications / active reviews / pending patches still reference the document — archive instead in that case.
+- `get_document_applicability`, `set_document_applicability` — the document's business scope ("Gilt für", ADR-108): which brands / sites / markets / site-profiles it may be published to (enforced at publish time; prevents cross-brand legal-content leakage). `set_` is a FULL REPLACE per axis (empty = no restriction on that axis); `get_` also returns any live delivery now out-of-scope as read-only `conflicts`. Use for a SHARED document you want to narrow to some brands/markets; use `create_document` `brand_id` instead for a single-brand hard pin. Neither publishes or withdraws.
 - `add_document_locale`, `remove_document_locale` — translation lifecycle. The default locale cannot be removed.
 - `upsert_document_section`, `delete_document_section`, `reorder_document_sections` — the structural skeleton of a document. Sections are upserted by stable `key`; the `key` is immutable.
 - `upsert_document_block`, `delete_document_block`, `reorder_document_blocks` — typed content units inside a section (`heading`, `paragraph`, `list`, `note`, `table`, `image`, `snippet_reference`). Variable references like `{{key}}` inside text are validated against the workspace's variables; `snippet_reference` payloads must point to a **published** snippet.
@@ -178,7 +179,7 @@ Then ask: "Approve? (y/N)" — and wait. Do NOT execute until the operator says 
 Once approved, run the writes **in order**:
 
 1. `create_brand` first.
-2. `create_site` next, passing `brand_id` from the brand response.
+2. `create_site` next, passing `brand_id` from the brand response — **only if the brand needs a website**. A site is a website (public-delivery surface + the unit WebsiteChange monitoring scans) and is OPTIONAL: a brand can author, publish and deliver without one (delivery is then addressed by brand). Creating a site is NOT plan-limited; only enrolling a site in monitoring counts toward `monitored_websites.max` (brands themselves count toward `active_brands.max`).
 3. `add_domain_to_site` once per domain.
 4. `attach_market_to_site` once per market (only if the operator named markets in the proposal).
 5. Variable overrides — one call per (variable, locale, target) tuple for locale-aware variables; one call per (variable, axis target) tuple for locale-agnostic variables (omit `locale` on the create — see the locale-agnostic contract above). If the proposal says "fix the existing override on brand X" rather than "create a new one", call `list_variable_overrides` first to fetch the row ID, then `update_variable_override` instead of `create_variable_override`.

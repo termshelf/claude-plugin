@@ -70,7 +70,9 @@ The plugin manifest at `.claude-plugin/plugin.json` registers this server under 
 | `list_document_types`, `get_document_type` | Discover the taxonomy a document attaches to (`privacy`, `imprint`, `terms`, …) | `content:read` |
 | `list_document_sections`, `list_document_blocks` | Direct list endpoints for a document's structural children | `content:read` |
 | `get_document_preview` | Render a document for a `(brand_id, locale, market_code, site_profile_code)` target. Returns the resolved HTML plus `unresolved_variables` / `unresolved_snippets`. Use this to verify overrides before publishing. | `content:read` |
-| `list_document_unpublished_refs` | Pre-publish cascade discovery: which referenced snippets/variables/overrides have unpublished drafts for the given publication targets | `content:read` |
+| `list_document_unpublished_refs` | Pre-publish cascade discovery: which referenced snippets/variables/overrides have unpublished drafts for the given publication targets (each target addressed by `site_id` or `brand_id`) | `content:read` |
+| `get_document_applicability` | Read a document's business scope ("Gilt für": brands/sites/markets/site-profiles) + any live delivery now out-of-scope (read-only conflicts) | `content:read` |
+| `set_document_applicability` | Replace a document's business scope across the four axes (full replace per axis; enforced at publish time; never publishes) | `content:write` |
 
 ### Writes
 
@@ -79,7 +81,7 @@ All write tools accept an optional `idempotency_key` parameter that forwards to 
 | Tool | What it does | Required ability |
 |---|---|---|
 | `create_brand` | Create a brand in the active workspace | `structure:write` |
-| `create_site` | Create a site linked to an existing brand | `structure:write` |
+| `create_site` | Create a site (website) linked to an existing brand. Brands are the plan's headline unit; sites count separately as *monitored websites*. A site is optional — a brand can publish and deliver without a website (delivery is then addressed by brand) | `structure:write` |
 | `add_domain_to_site` | Attach a hostname (optionally primary) to a site | `structure:write` |
 | `attach_market_to_site`, `detach_market_from_site` | Attach / detach an existing market to/from a site (detach is idempotent; does not delete the market) | `structure:write` |
 | `attach_site_profile_to_site`, `detach_site_profile_from_site` | Attach / detach an existing site profile (e.g. b2b, b2c) to/from a site. Attach is **required before a profile-scoped publish target** (e.g. terms_of_service + profile=b2b) can be created — otherwise the publish is rejected (ADR-108) | `structure:write` |

@@ -22,7 +22,7 @@ You are the fallback intelligence for exactly the cases the server marks `blocke
 
 **Reads (`intelligence:read`, safe to call freely):**
 - `list_document_intelligence_runs`, `get_document_intelligence_run` — impact runs + their findings.
-- `list_document_intelligence_findings` — triage list; open findings sort first. Filter by `status`, `severity`, `category`, `site_id`, `document_id`, `trigger_type`.
+- `list_document_intelligence_findings` — triage list; open findings sort first. Filter by `status`, `severity`, `category`, `site_id`, `document_id`, `trigger_type`. Note: a run/finding is anchored to a **brand** and may be site-less — `site_id` can be null for a brand that publishes without a website (legal-change analysis is brand-driven), so don't assume every finding carries a site.
 - `get_document_intelligence_finding` — full context: `summary`, `impact_reason`, `suggested_action`, bounded `evidence`, `review_questions`, status history, and the linked patch suggestion.
 - `get_finding_patch_suggestion`, `get_patch` — the patch proposal: `changeset` (before/after + target), `rationale`, `generation_status`, `draft_preparation_status`, `draft_preparation_target_type`/scope, and (when blocked) `draft_preparation_error` + target warnings.
 - `get_patch_draft_review` — the source→prepared-draft diff for a prepared patch. Use to VERIFY.

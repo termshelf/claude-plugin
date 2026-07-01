@@ -63,6 +63,7 @@ Rules:
 - If `sites` has exactly one entry, use its `slug` without asking. If there are multiple, list site names + slugs and ask which one. Suggest the developer use the brand grouping if it helps disambiguate.
 - If `document_types` doesn't include the type the developer asked for by name, list the available `code` values and ask. Do NOT invent a code that isn't in the blob — workspaces can disable, rename, or add custom types.
 - Pick a `locale` from the chosen site's `default_locale` / `supported_locales`. If the developer asked for a locale that's not in `supported_locales`, flag it and ask before continuing.
+- Site-less brands: a brand can publish content **without a website**, in which case it won't appear under `sites`. If the developer wants such a brand's content, ask for the **brand slug** and use the brand route (`/v1/brands/{account_hash}/{brand_slug}/…`) — see "Site vs brand addressing" below.
 
 ## The URL contract
 
@@ -73,6 +74,19 @@ GET {baseUrl}/v1/delivery/{accountHash}/{siteSlug}/documents/{typeCode}        �
 GET {baseUrl}/v1/delivery/{accountHash}/{siteSlug}/documents/{typeCode}/html   → HTML fragment
 GET {baseUrl}/v1/delivery/{accountHash}/{siteSlug}/documents/{typeCode}/pdf    → PDF binary
 ```
+
+### Site vs brand addressing
+
+Content is addressable two ways — pick whichever matches how the workspace is set up:
+
+- **By site** (`/v1/delivery/{accountHash}/{siteSlug}/…`) — the original, compatibility path. Use it when the integration context lists `sites`.
+- **By brand** (`/v1/brands/{accountHash}/{brandSlug}/…`) — for content a brand publishes **without a website**. Same three artifacts, same query params, same response shape (the `target` carries `brand_id`/`brand_slug` instead of `site_id`/`site_slug`).
+
+```
+GET {baseUrl}/v1/brands/{accountHash}/{brandSlug}/documents/{typeCode}[/html|/pdf]
+```
+
+Both routes serve the same published projection; a site's content is also reachable by its brand. Prefer the site route when you have a site slug (it is the established default); use the brand route when the workspace delivers a brand that has no website.
 
 Query params (URL-encode them properly):
 
@@ -137,6 +151,8 @@ Response envelope (schema_version 1):
   "document":  { "type_code": "privacy_policy", "slug": "…", "title": "…", "summary": null },
   "target":    { "account_hash": "K57CDHNXYQ", "site_id": 42, "site_slug": "main-site",
                  "locale_code": "de", "market_code": "DE", "site_profile_code": "B2C" },
+  // A brand-route response instead carries "brand_id"/"brand_slug" and omits
+  // "site_id"/"site_slug"; the rest of the envelope is identical.
   "version":   { "number": 3, "captured_at": "…", "published_at": "…" },
   "sections":  [ { "key": "main", "title": "…", "blocks": [ /* … */ ] } ],
   "meta":      { "etag": "\"v3-…\"", "built_at": "…", "first_published_at": "…" }

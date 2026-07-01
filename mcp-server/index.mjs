@@ -398,7 +398,18 @@ server.tool(
               .number()
               .int()
               .positive()
-              .describe("Target site to publish to (see list_sites)."),
+              .optional()
+              .describe(
+                "Target SITE to publish to (see list_sites). Provide this OR brand_id — exactly one per target.",
+              ),
+            brand_id: z
+              .number()
+              .int()
+              .positive()
+              .optional()
+              .describe(
+                "Target BRAND for a brand-only publish with no website (ADR-112). Provide this OR site_id — exactly one per target. A site target already implies its brand.",
+              ),
             locale_code: z
               .string()
               .max(32)
@@ -421,7 +432,7 @@ server.tool(
       )
       .min(1)
       .describe(
-        "One row per (site, locale, market?, profile?) target the operator plans to publish to. Override discovery is filtered to overrides matching at least one of these tuples.",
+        "One row per target the operator plans to publish to — addressed by site_id (compat) OR brand_id (brand-only, no website). Override discovery is filtered to overrides matching at least one of these tuples.",
       ),
   },
   async ({ document_id, targets }) =>
@@ -429,6 +440,22 @@ server.tool(
       await callManagement("POST", `/documents/${document_id}/unpublished-references`, {
         body: { targets },
       }),
+    ),
+);
+
+server.tool(
+  "get_document_applicability",
+  "Read a document's business scope (\"Gilt für\", ADR-108): which brands / sites / markets / site-profiles it may be published to, plus any LIVE delivery projections that now fall OUTSIDE that scope (`conflicts`, read-only — surfaced so the operator can decide to re-publish or withdraw in the customer-app; this tool never touches delivery). An empty axis means \"no restriction on that axis\". Read-only.",
+  {
+    document_id: z
+      .number()
+      .int()
+      .positive()
+      .describe("Document row ID (see list_documents)."),
+  },
+  async ({ document_id }) =>
+    asToolResult(
+      await callManagement("GET", `/documents/${document_id}/applicability`),
     ),
 );
 
@@ -467,7 +494,7 @@ server.tool(
 
 server.tool(
   "create_site",
-  "Create a new site for an existing brand. Returns the persisted site with embedded domains (empty until add_domain_to_site is called).",
+  "Create a new site (a website) for an existing brand. Brands are the headline plan unit; a site is the technical carrier of ONE website — used for public delivery URLs and as the unit WebsiteChange monitoring scans. A site is NOT required to publish or deliver: a brand can author, publish and deliver documents without any website (delivery is then addressed by brand). Returns the persisted site with embedded domains (empty until add_domain_to_site is called).",
   {
     brand_id: z
       .number()
@@ -1431,21 +1458,28 @@ server.tool(
       .optional()
       .describe("Free-text operator summary."),
     client_id: z.number().int().positive().nullable().optional(),
-    brand_id: z.number().int().positive().nullable().optional(),
+    brand_id: z
+      .number()
+      .int()
+      .positive()
+      .nullable()
+      .optional()
+      .describe(
+        "Hard-pin the document to a single brand (ADR-107, whole-document brand divergence). Omit for a shared document. Documents are NOT website-bound (ADR-111) — there is no site_id on creation.",
+      ),
     product_id: z.number().int().positive().nullable().optional(),
-    site_id: z.number().int().positive().nullable().optional(),
     supported_locale_codes: z
       .array(z.string().max(32))
       .optional()
       .describe(
-        "BCP-47-like locale codes this document is authored in. Defaults to the linked site's locales (falling back to the workspace default). Must contain `default_locale_code` if both are sent.",
+        "BCP-47-like locale codes this document is authored in. Defaults to the workspace default. Must contain `default_locale_code` if both are sent.",
       ),
     default_locale_code: z
       .string()
       .max(32)
       .optional()
       .describe(
-        "Default locale; falls back to the first entry of `supported_locale_codes`, then the linked site's default, then the workspace default.",
+        "Default locale; falls back to the first entry of `supported_locale_codes`, then the workspace default.",
       ),
     ...idempotencyInput,
   },
@@ -1478,6 +1512,40 @@ server.tool(
       await callManagement("PATCH", `/documents/${document_id}`, {
         body,
         idempotencyKey: idempotency_key,
+      }),
+    ),
+);
+
+server.tool(
+  "set_document_applicability",
+  "Replace a document's business scope (\"Gilt für\", ADR-108) across four axes: brand / site / market / site-profile. This is a FULL REPLACE — send the complete desired set for each axis; an omitted or empty array clears that axis (no restriction). Within an axis the values are OR'd; across axes they are AND'd. The scope is enforced at PUBLISH time (a target outside it is rejected) and never leaks brand-specific legal content across brands. Use this after create_document to scope a brand-specific document (though a hard single-brand pin is better set via create_document's brand_id). Returns the resolved scope + any now-out-of-scope live delivery conflicts (read-only; withdrawing a live target stays a human step). Requires `content:write`. Does NOT publish.",
+  {
+    document_id: z
+      .number()
+      .int()
+      .positive()
+      .describe("Document row ID (see list_documents)."),
+    brand_ids: z
+      .array(z.number().int().positive())
+      .optional()
+      .describe("Brands the document applies to. Empty/omitted = all brands."),
+    site_ids: z
+      .array(z.number().int().positive())
+      .optional()
+      .describe("Sites the document applies to. Empty/omitted = all sites."),
+    market_codes: z
+      .array(z.string().max(64))
+      .optional()
+      .describe("Market codes the document applies to. Empty/omitted = all markets."),
+    site_profile_codes: z
+      .array(z.string().max(64))
+      .optional()
+      .describe("Site-profile codes the document applies to. Empty/omitted = all profiles."),
+  },
+  async ({ document_id, ...body }) =>
+    asToolResult(
+      await callManagement("PUT", `/documents/${document_id}/applicability`, {
+        body,
       }),
     ),
 );

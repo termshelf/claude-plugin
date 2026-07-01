@@ -4,19 +4,32 @@ Authoritative reference for code-generation. Mirror of the contracts declared in
 
 ## Endpoints
 
+Site route (compatibility path):
+
 ```
 GET {base}/v1/delivery/{accountHash}/{siteSlug}/documents/{typeCode}        application/json
 GET {base}/v1/delivery/{accountHash}/{siteSlug}/documents/{typeCode}/html   text/html; charset=utf-8
 GET {base}/v1/delivery/{accountHash}/{siteSlug}/documents/{typeCode}/pdf    application/pdf
 ```
 
+Brand route (content published without a website):
+
+```
+GET {base}/v1/brands/{accountHash}/{brandSlug}/documents/{typeCode}         application/json
+GET {base}/v1/brands/{accountHash}/{brandSlug}/documents/{typeCode}/html    text/html; charset=utf-8
+GET {base}/v1/brands/{accountHash}/{brandSlug}/documents/{typeCode}/pdf     application/pdf
+```
+
+Both routes serve the same published projection, take the same query params, and return the same envelope shape (only the `target` identity differs — see below). Every projection row is brand-tagged, so a site's content is reachable by its brand too; use the brand route when a brand delivers without a site.
+
 Path params:
 
 - `accountHash` — string. The owning account's immutable public hash (10-char Crockford base32, e.g. `K57CDHNXYQ`). Globally unique; isolates one customer's URL namespace from every other.
-- `siteSlug` — string. The site's slug, unique within the account. Renaming the slug invalidates every live URL; the Backoffice guards rename behind an explicit confirm.
+- `siteSlug` — string (site route). The site's slug, unique within the account. Renaming the slug invalidates every live URL; the Backoffice guards rename behind an explicit confirm.
+- `brandSlug` — string (brand route). The brand's slug, unique within the account.
 - `typeCode` — string. Stable code. The five seeded baseline codes are `privacy_policy`, `imprint`, `terms`, `withdrawal`, `cookie_policy`. Custom workspace-defined codes are also valid.
 
-Note: the numeric site row id is still returned in the JSON response body as `target.site_id` for diagnostics and analytics; it is **not** part of the URL.
+Note: the numeric identity is still returned in the JSON response body for diagnostics/analytics — `target.site_id` on the site route, `target.brand_id` on the brand route; neither is part of the URL.
 
 Query params:
 
@@ -70,6 +83,21 @@ No `Authorization` header. Per-site entitlement gating happens server-side based
 ```
 
 `schema_version` and `api_version` let you fence consumers against future breaking changes — pin both in your code.
+
+**Target identity by route.** On the **site** route, `target` carries `site_id` + `site_slug` (as above). On the **brand** route, it carries `brand_id` + `brand_slug` and omits the site fields:
+
+```json
+"target": {
+  "account_hash":      "K57CDHNXYQ",
+  "brand_id":          7,
+  "brand_slug":        "acme-brand",
+  "locale_code":       "de",
+  "market_code":       null,
+  "site_profile_code": null
+}
+```
+
+Treat all four id/slug fields as optional and read whichever pair is present. Everything else in the envelope is identical across routes.
 
 ### Block kinds
 
@@ -162,7 +190,7 @@ Codes:
 
 | Code | HTTP | Meaning |
 |---|---|---|
-| `not_found` | 404 | Unknown `(accountHash, siteSlug)` pair, or no projection row for `(site, type, locale, market, profile)` |
+| `not_found` | 404 | Unknown `(accountHash, siteSlug)` / `(accountHash, brandSlug)` pair, or no live projection row for `(site\|brand, type, locale, market, profile)` |
 | `invalid_request` | 400 | Malformed path or query parameter |
 | `unsupported_version` | 400 | Unknown `?api=` value |
 | `version_mismatch` | 409 | Pinned `?version=N` no longer live; body has current number |
