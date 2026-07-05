@@ -21486,6 +21486,63 @@ server.tool(
   )
 );
 server.tool(
+  "list_site_legal_links",
+  'List the canonical legal-page link mappings declared for a site. Each mapping declares the CANONICAL live URL for a document type on a specific domain, which stops the scanner from raising an ambiguous "multiple live links found" Document-Intelligence finding for that page. Returns each mapping\'s id, domain, document type, path, and derived canonical_url. Requires `structure:read`.',
+  {
+    site_id: external_exports.number().int().positive()
+  },
+  async ({ site_id }) => asToolResult(
+    await callManagement("GET", `/sites/${site_id}/legal-link-mappings`)
+  )
+);
+server.tool(
+  "add_legal_link_to_site",
+  'Declare the CANONICAL legal-page URL for a document type on a specific domain of a site. This tells the scanner which live link is authoritative, so it stops flagging the site\'s content/guide pages as an ambiguous "multiple live links found" Document-Intelligence finding. Get `domain_id` from get_site (embedded domains / legal_link_mappings) and `document_type_id` from list_document_types. `path` is domain-relative with a leading slash (e.g. "/datenschutz"). Only ONE mapping is allowed per (domain, document type) \u2014 a duplicate returns a 422. Requires `structure:write`.',
+  {
+    site_id: external_exports.number().int().positive(),
+    domain_id: external_exports.number().int().positive().describe("Domain the canonical page lives on; from get_site."),
+    document_type_id: external_exports.number().int().positive().describe("Document type this page is canonical for; from list_document_types."),
+    path: external_exports.string().min(1).max(2048).describe('Domain-relative path with leading slash, e.g. "/datenschutz".'),
+    ...idempotencyInput
+  },
+  async ({ site_id, idempotency_key, ...body }) => asToolResult(
+    await callManagement("POST", `/sites/${site_id}/legal-link-mappings`, {
+      body,
+      idempotencyKey: idempotency_key
+    })
+  )
+);
+server.tool(
+  "update_site_legal_link",
+  'Update the domain-relative `path` of an existing canonical legal-page link mapping. The (domain, document type) scope is immutable \u2014 remove and re-declare if that changed. `path` has a leading slash (e.g. "/datenschutz"). Requires `structure:write`.',
+  {
+    site_id: external_exports.number().int().positive(),
+    mapping_id: external_exports.number().int().positive(),
+    path: external_exports.string().min(1).max(2048).describe('New domain-relative path with leading slash, e.g. "/datenschutz".')
+  },
+  async ({ site_id, mapping_id, path }) => asToolResult(
+    await callManagement(
+      "PATCH",
+      `/sites/${site_id}/legal-link-mappings/${mapping_id}`,
+      { body: { path } }
+    )
+  )
+);
+server.tool(
+  "remove_legal_link_from_site",
+  'Remove a canonical legal-page link mapping from a site. After removal the scanner no longer treats that URL as canonical for the (domain, document type), so an ambiguous "multiple live links found" finding may re-appear if several live links still classify into that category. Requires `structure:write`.',
+  {
+    site_id: external_exports.number().int().positive(),
+    mapping_id: external_exports.number().int().positive()
+  },
+  async ({ site_id, mapping_id }) => asToolResult(
+    await callManagement(
+      "DELETE",
+      `/sites/${site_id}/legal-link-mappings/${mapping_id}`
+    )
+  )
+);
+server.tool(
   "list_markets",
   "List markets in the active workspace, ordered by code. Use this to discover market `id` + `code` for scoping overrides (create_variable_override / create_snippet_override `market_id`) and document previews (`market_code`). Paginated; optional status filter. Requires `structure:read`.",
   {

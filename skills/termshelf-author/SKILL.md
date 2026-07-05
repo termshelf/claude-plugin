@@ -20,7 +20,8 @@ When this skill is active, Claude Code has these MCP tools available under the `
 
 **Reads (no side effects, safe to call freely):**
 - `whoami` — confirm auth + see the bound workspace and the token's ability list
-- `list_sites`, `get_site` — existing sites + their domains, markets, profiles
+- `list_sites`, `get_site` — existing sites + their domains, markets, profiles, and declared canonical legal-page links (`legal_link_mappings`)
+- `list_site_legal_links` — the canonical legal-page link mappings declared for a site (which live URL is authoritative for a document type on a domain)
 - `list_markets`, `get_market` — the workspace's markets (variance axis; filter by `status`)
 - `list_site_profiles`, `get_site_profile` — the workspace's site profiles (second variance axis; filter by `status`)
 - `list_workspace_variables`, `get_workspace_variable` — every `{{key}}` placeholder + `is_locale_agnostic` + `overrides_count` + the live draft `value` and the last-published value + `has_unpublished_changes` (true iff the draft would actually persist a new version on publish)
@@ -38,6 +39,7 @@ The `has_unpublished_changes` flag is true when the draft would actually persist
 
 **Structure writes** (require the `structure:write` ability — confirm with the operator before calling):
 - `create_brand`, `create_site`, `add_domain_to_site`, `attach_market_to_site` — the brand → site → domain → market chain. **Brands** are the plan's headline unit (`active_brands.max`); **sites** are websites and count separately as *monitored websites* (`monitored_websites.max`, the WebsiteChange/scan cost driver). A site is optional: a brand can author, publish and deliver documents without any website (delivery is then addressed by brand). Only active (non-archived) brands/websites count toward their limits.
+- `add_legal_link_to_site`, `update_site_legal_link`, `remove_legal_link_from_site` — declare / edit / remove the CANONICAL legal-page URL for a document type on a specific domain. Declaring one tells the scanner which live link is authoritative, so it stops flagging the site's content/guide pages as an ambiguous "multiple live links found" Document-Intelligence finding. Get `domain_id` from `get_site`, `document_type_id` from `list_document_types`; `path` is domain-relative (leading slash). Only ONE mapping per (domain, document type) — a duplicate returns 422.
 - `create_market`, `update_market`, `activate_market`, `deactivate_market` — market CRUD + lifecycle.
 - `create_site_profile`, `update_site_profile`, `activate_site_profile`, `deactivate_site_profile` — site-profile CRUD + lifecycle.
 
@@ -119,7 +121,7 @@ Creating identical per-brand overrides where one locale-only override would do i
 
 **Managing the axes themselves.** Create or rename a market with `create_market` / `update_market` (`label` is the required human name; `code` is optional **on create** — the server suggests one from the label, and it is immutable afterwards; `country_code` is the optional advisory metadata above). Toggle availability with `activate_market` / `deactivate_market`. Site profiles work identically via `create_site_profile` / `update_site_profile` / `activate_site_profile` / `deactivate_site_profile`. To make a market usable on a particular website, attach it with `attach_market_to_site`. Discover existing axes first with `list_markets` / `list_site_profiles` (filter by `status`) so you reuse an existing one instead of minting a duplicate.
 
-> **Note:** markets and site profiles cannot be hard-deleted via the API — they are referenced by overrides, so deactivate them instead of deleting. Site lifecycle gaps (`update_site`, deleting/archiving a site, detaching a market, removing a domain, attaching/detaching a site profile) are not yet exposed as tools — those operations currently live only in the customer-app SPA. Direct the operator there for them.
+> **Note:** markets and site profiles cannot be hard-deleted via the API — they are referenced by overrides, so deactivate them instead of deleting. Declaring canonical legal-page links IS now exposed (`add_legal_link_to_site` / `update_site_legal_link` / `remove_legal_link_from_site`). Some site lifecycle operations remain gaps (`update_site`, deleting/archiving a site, detaching a market, removing a domain) — those currently live only in the customer-app SPA. Direct the operator there for them.
 
 > **Contract for `is_locale_agnostic: true` variables.** "Locale-agnostic" means *no per-locale variation* — it does **not** mean "no per-axis variation." Brand, market, and site_profile overrides are allowed; only the locale axis is suppressed.
 > - `create_variable_override` on a locale-agnostic parent **requires** `locale` to be omitted (or `null`) and **requires** at least one of `brand_id` / `market_id` / `site_profile_id` to be set. Setting `locale` is rejected (`validation.failed`); a fully-empty axis tuple is rejected because it would duplicate the workspace default.

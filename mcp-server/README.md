@@ -59,7 +59,8 @@ The plugin manifest at `.claude-plugin/plugin.json` registers this server under 
 |---|---|---|
 | `whoami` | Confirm auth + return user / workspace / token metadata | `structure:read` |
 | `list_sites` | List sites with filters (brand_id, status) + pagination | `structure:read` |
-| `get_site` | Fetch a site by ID with embedded domains / markets / profiles | `structure:read` |
+| `get_site` | Fetch a site by ID with embedded domains / markets / profiles / declared canonical legal-page links | `structure:read` |
+| `list_site_legal_links` | List the canonical legal-page link mappings declared for a site (which live URL is authoritative for a document type on a domain) | `structure:read` |
 | `list_markets`, `get_market` | List / fetch markets — the workspace-scoped variance axis (filter by `status`) | `structure:read` |
 | `list_site_profiles`, `get_site_profile` | List / fetch site profiles — the second workspace-scoped variance axis (filter by `status`) | `structure:read` |
 | `list_workspace_variables` | List variables with `is_locale_agnostic`, `published_value`, `overrides_count` | `content:read` |
@@ -85,6 +86,7 @@ All write tools accept an optional `idempotency_key` parameter that forwards to 
 | `add_domain_to_site` | Attach a hostname (optionally primary) to a site | `structure:write` |
 | `attach_market_to_site`, `detach_market_from_site` | Attach / detach an existing market to/from a site (detach is idempotent; does not delete the market) | `structure:write` |
 | `attach_site_profile_to_site`, `detach_site_profile_from_site` | Attach / detach an existing site profile (e.g. b2b, b2c) to/from a site. Attach is **required before a profile-scoped publish target** (e.g. terms_of_service + profile=b2b) can be created — otherwise the publish is rejected (ADR-108) | `structure:write` |
+| `add_legal_link_to_site`, `update_site_legal_link`, `remove_legal_link_from_site` | Declare / edit / remove the CANONICAL legal-page URL for a document type on a specific domain, so the scanner stops flagging the site's content/guide pages as an ambiguous "multiple live links found" Document-Intelligence finding. `domain_id` from `get_site`, `document_type_id` from `list_document_types`; `path` is domain-relative (leading slash); only ONE mapping per (domain, document type) — a duplicate returns 422 | `structure:write` |
 | `create_market`, `update_market`, `activate_market`, `deactivate_market` | Market CRUD + lifecycle. `code` + `label` required on create; `code` is immutable afterwards (not editable via `update_market`); `country_code` optional ISO-3166 alpha-2 advisory metadata for Document Intelligence (NOT a locale). No delete — deactivate instead | `structure:write` |
 | `create_site_profile`, `update_site_profile`, `activate_site_profile`, `deactivate_site_profile` | Site-profile CRUD + lifecycle. `code` + `label` required on create; `code` is immutable afterwards. No delete — deactivate instead | `structure:write` |
 | `create_variable_override`, `update_variable_override`, `delete_variable_override` | Per-locale value overrides for a workspace variable | `overrides:write` |
