@@ -108,7 +108,7 @@ Treat all four id/slug fields as optional and read whichever pair is present. Ev
 | `list` | `style: "bullet" \| "ordered"`, `items: string[]` |
 | `note` | `severity: "info" \| "warning"`, `text: string` |
 | `table` | `rows: string[][]`, `header?: bool`, `cell_attrs?: { colspan?, rowspan?, backgroundColor? }[][]` |
-| `image` | `src: string`, `alt?: string`, `title?: string` |
+| `image` | `src: string` (absolute http(s) URL **or** an inline base64 `data:image/*` URI), `alt?: string`, `title?: string` |
 
 Snippet references and `{{variable}}` tokens are **already resolved** — consumers never see them.
 

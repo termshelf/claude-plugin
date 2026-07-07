@@ -1876,7 +1876,7 @@ server.tool(
           "  list               -> { items: list<string>, style?: 'bullet'|'ordered', item_inlines?: list }\n" +
           "  note               -> { text: string, severity?: 'info'|'warning' (default 'info'), inlines?: list }\n" +
           "  table              -> { rows: list<list<string>>, header?: bool, cell_inlines?: list, cell_attrs?: list }\n" +
-          "  image              -> { src: absolute http(s) URL, alt?: string, title?: string }\n" +
+          "  image              -> { src: absolute http(s) URL OR inline base64 data:image/* URI, alt?: string, title?: string }\n" +
           "  snippet_reference  -> { snippet_id: int (may reference a not-yet-published DRAFT snippet; only needs to exist and not be archived) }",
       ),
     payload: z

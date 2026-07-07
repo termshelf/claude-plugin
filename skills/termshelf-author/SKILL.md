@@ -299,7 +299,7 @@ Once approved, run the writes **in order**:
    - `list` → `{ items: [string, …], style?: 'bullet' | 'ordered' }`.
    - `note` → `{ text, severity?: 'info' | 'warning' }`. Useful for operator remarks the publisher should see, e.g. "TODO: confirm processor list".
    - `table` → `{ rows: [[cell, …], …], header?: bool }`. Cells are single-line strings. Every row must have the same column count.
-   - `image` → `{ src: absolute http(s) URL, alt?, title? }`. Image bytes are not stored — only URLs.
+   - `image` → `{ src, alt?, title? }`. `src` is EITHER an absolute http(s) URL (bytes fetched at view time, not stored) OR an inline base64 `data:image/*` URI (bytes embedded verbatim in the block; allowed subtypes: png/jpeg/gif/webp/svg+xml/avif/bmp/ico). Non-image `data:` and `javascript:` URIs are rejected.
    - `snippet_reference` → `{ snippet_id }`. Renders the snippet inline at delivery time. The snippet does not have to be published when the block is written, but the publish-time cascade will refuse to publish the document until every referenced snippet is published.
 
    Each block also needs a stable `key` unique within the document (2–64 chars, must start with a letter, only a-z / 0-9 / underscore / hyphen). Pick semantic keys (`intro_p1`, `rights_ref`) — they show up in audit events and variant overrides bind to them.
