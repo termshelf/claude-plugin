@@ -59,10 +59,10 @@ function bumpMcpServerVersionLiteral() {
   const rel = "mcp-server/index.mjs";
   const abs = path.join(repoRoot, rel);
   const src = fs.readFileSync(abs, "utf8");
-  // Anchor on `new McpServer({ ... version: "X.Y.Z" ... })` so we only
+  // Anchor on `new McpServer({ ... version: "X.Y.Z" ... })` (whitespace after `(` allowed) so we only
   // touch the handshake literal, never a string that happens to look
   // like a version number in some unrelated context.
-  const re = /(new McpServer\(\{[\s\S]*?version:\s*")([^"]+)(")/;
+  const re = /(new McpServer\(\s*\{[\s\S]*?version:\s*")([^"]+)(")/;
   if (!re.test(src)) {
     process.stderr.write(`Did not find a 'new McpServer({ … version: "…" })' literal in ${rel}.\n`);
     process.exit(4);
