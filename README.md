@@ -53,14 +53,9 @@ This tier **does** call TermShelf — it drives the `/api/v1/management/*` surfa
 
 ### One-time setup
 
-After installing the plugin, install the MCP server's Node dependencies:
+No extra install step: the MCP server ships pre-bundled (`mcp-server/dist/index.mjs`) and only needs Node.js ≥ 18 on your `PATH`.
 
-```sh
-cd "$(claude code plugins root)/termshelf/mcp-server"   # or your manual clone path
-npm install
-```
-
-Then issue a Management API token in the customer-app (**Settings → API Tokens**) with the scopes you want Claude to have:
+Issue a Management API token in the customer-app (**Settings → API Tokens**) with the scopes you want Claude to have:
 
 | Scope | What it grants |
 |---|---|
@@ -79,6 +74,8 @@ export TERMSHELF_TOKEN=<your-token>
 # For local development:
 # export TERMSHELF_BASE_URL=http://app.termshelf.local:9191
 ```
+
+Then (re)start Claude Code from that shell. Without a token the plugin still loads, and the `termshelf-author` tools answer with `auth.bearer_required` plus these instructions.
 
 The MCP server reads the token from the environment and **never** echoes it. If you ever see it in a Claude transcript, rotate it.
 

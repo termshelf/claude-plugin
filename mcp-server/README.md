@@ -4,14 +4,19 @@ A small Node.js MCP server that exposes the TermShelf external management API (`
 
 ## Install
 
+Nothing to install for plugin users: `.claude-plugin/plugin.json` runs the pre-built, self-contained bundle `dist/index.mjs` (all dependencies inlined), so only Node.js ≥ 18 is required.
+
+To work on the server itself:
+
 ```sh
 cd mcp-server
 npm install
+npm run build   # regenerates dist/index.mjs — commit it together with index.mjs
 ```
 
 Two environment variables drive it:
 
-- `TERMSHELF_TOKEN` (required) — a Sanctum bearer token issued from the customer-app **Settings → API Tokens** page. The server refuses to start without it.
+- `TERMSHELF_TOKEN` (required) — a Sanctum bearer token issued from the customer-app **Settings → API Tokens** page. Without it the server still starts, but every tool returns `auth.bearer_required` with setup instructions.
 - `TERMSHELF_BASE_URL` (optional) — defaults to `https://app.termshelf.de`. For local development against a Docker stack, set it to `http://app.termshelf.local:9191`.
 
 Token scopes you'll usually want for the author skill:
@@ -46,7 +51,7 @@ published-only".
 ## Run
 
 ```sh
-TERMSHELF_TOKEN=<token> npm start
+TERMSHELF_TOKEN=<token> node dist/index.mjs   # or `npm start` for the unbundled source
 ```
 
 The plugin manifest at `.claude-plugin/plugin.json` registers this server under the name `termshelf-author`, so once the plugin is installed Claude Code spawns it automatically when the `termshelf-author` skill is invoked.

@@ -9,10 +9,14 @@
  * Configuration (env):
  *   - TERMSHELF_TOKEN     (required)  bearer token issued from the
  *                                     customer-app Settings → API Tokens
- *                                     page (see MX-E02). The server
- *                                     refuses to start without it and
- *                                     NEVER echoes it back through any
- *                                     tool result or log.
+ *                                     page (see MX-E02). Without it the
+ *                                     server still starts (so the plugin
+ *                                     doesn't show up as broken), but
+ *                                     every tool returns
+ *                                     `auth.bearer_required` with setup
+ *                                     instructions. The token is NEVER
+ *                                     echoed back through any tool
+ *                                     result or log.
  *   - TERMSHELF_BASE_URL  (optional)  defaults to https://app.termshelf.de
  *                                     For local dev, point at e.g.
  *                                     http://app.termshelf.local:9191
@@ -30,14 +34,25 @@ const BASE_URL = (process.env.TERMSHELF_BASE_URL ?? "https://app.termshelf.de").
   "",
 );
 
-if (!TOKEN || TOKEN.trim() === "") {
+const HAS_TOKEN = typeof TOKEN === "string" && TOKEN.trim() !== "";
+
+if (!HAS_TOKEN) {
+  // Do NOT exit: a crashing server makes the whole plugin look broken in
+  // `/mcp`. Start normally and answer every tool call with a helpful
+  // `auth.bearer_required` envelope instead (see callManagement).
   process.stderr.write(
-    "TERMSHELF_TOKEN env var is required.\n" +
-      "Issue a token in the TermShelf customer-app: Settings → API Tokens.\n" +
-      "Then export TERMSHELF_TOKEN=<value> before launching the MCP server.\n",
+    "TERMSHELF_TOKEN is not set — tools will return auth.bearer_required until it is.\n",
   );
-  process.exit(2);
 }
+
+const MISSING_TOKEN_ERROR = {
+  code: "auth.bearer_required",
+  message:
+    "No TermShelf token configured: TERMSHELF_TOKEN is not set in the MCP server's environment. " +
+    "Issue a Management API token in the TermShelf customer-app (Settings → API Tokens, " +
+    "https://app.termshelf.de/app/settings/api-tokens), export TERMSHELF_TOKEN=<value> in the shell " +
+    "that launches Claude Code, then restart Claude Code.",
+};
 
 // --- HTTP client ------------------------------------------------------------
 
@@ -50,6 +65,10 @@ if (!TOKEN || TOKEN.trim() === "") {
  * callers see the body but not the credential.
  */
 async function callManagement(method, path, { body, idempotencyKey } = {}) {
+  if (!HAS_TOKEN) {
+    return { ok: false, status: 401, error: MISSING_TOKEN_ERROR };
+  }
+
   const url = `${BASE_URL}/api/v1/management${path}`;
   const headers = {
     Authorization: `Bearer ${TOKEN}`,

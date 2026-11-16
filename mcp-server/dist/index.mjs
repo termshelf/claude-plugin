@@ -21106,13 +21106,20 @@ var BASE_URL = (process.env.TERMSHELF_BASE_URL ?? "https://app.termshelf.de").re
   /\/+$/,
   ""
 );
-if (!TOKEN || TOKEN.trim() === "") {
+var HAS_TOKEN = typeof TOKEN === "string" && TOKEN.trim() !== "";
+if (!HAS_TOKEN) {
   process.stderr.write(
-    "TERMSHELF_TOKEN env var is required.\nIssue a token in the TermShelf customer-app: Settings \u2192 API Tokens.\nThen export TERMSHELF_TOKEN=<value> before launching the MCP server.\n"
+    "TERMSHELF_TOKEN is not set \u2014 tools will return auth.bearer_required until it is.\n"
   );
-  process.exit(2);
 }
+var MISSING_TOKEN_ERROR = {
+  code: "auth.bearer_required",
+  message: "No TermShelf token configured: TERMSHELF_TOKEN is not set in the MCP server's environment. Issue a Management API token in the TermShelf customer-app (Settings \u2192 API Tokens, https://app.termshelf.de/app/settings/api-tokens), export TERMSHELF_TOKEN=<value> in the shell that launches Claude Code, then restart Claude Code."
+};
 async function callManagement(method, path, { body, idempotencyKey } = {}) {
+  if (!HAS_TOKEN) {
+    return { ok: false, status: 401, error: MISSING_TOKEN_ERROR };
+  }
   const url = `${BASE_URL}/api/v1/management${path}`;
   const headers = {
     Authorization: `Bearer ${TOKEN}`,
