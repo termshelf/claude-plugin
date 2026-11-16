@@ -380,7 +380,7 @@ For full workflows load the termshelf-author skill.`;
 const server = new McpServer(
   {
     name: "termshelf",
-    version: "2.5.1",
+    version: "2.5.2",
   },
   { instructions: SERVER_INSTRUCTIONS },
 );
