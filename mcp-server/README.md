@@ -29,6 +29,10 @@ Token scopes you'll usually want for the author skill:
 
 The token should NOT include `publish:trigger` for the author skill — publishing stays operator-driven.
 
+### Content model the server advertises
+
+The server sends MCP `instructions` on connect: an agent learns the shared-document model (corpus = all audience brands, brand variance via snippet/variable overrides, optional snippets for brand-only sections, draft = next version) even without the `termshelf-author` skill loaded.
+
 ### Draft lifecycle (the MCP never publishes)
 
 Every write through this server lands in a **draft** (working copy): document
@@ -72,10 +76,12 @@ The plugin manifest at `.claude-plugin/plugin.json` registers this server under 
 | `list_workspace_snippets` | List snippets with `published_blocks`, `overrides_count` | `content:read` |
 | `list_locales` | List every locale in active use in the workspace | `content:read` |
 | `list_documents` | List documents (id, slug, title, `document_type.code`); filter by `document_type_code` | `content:read` |
-| `get_document` | Fetch a single document by ID, including the full structured tree (sections + ordered blocks) | `content:read` |
+| `get_document` | Fetch a single document by ID, including the full structured tree (sections + ordered blocks) and `brand_context` (audience brands + live state, per-brand × locale coverage of every snippet reference) | `content:read` |
+| `list_document_publications` | Live state of a document: delivered tuples with version / ETag / first-published, the working draft vs. live, recent publication requests with per-target failure reasons | `content:read` |
 | `list_document_types`, `get_document_type` | Discover the taxonomy a document attaches to (`privacy`, `imprint`, `terms`, …) | `content:read` |
 | `list_document_sections`, `list_document_blocks` | Direct list endpoints for a document's structural children | `content:read` |
-| `get_document_preview` | Render a document for a `(brand_id, locale, market_code, site_profile_code)` target. Returns the resolved HTML plus `unresolved_variables` / `unresolved_snippets`. Use this to verify overrides before publishing. | `content:read` |
+| `get_document_preview` | Render a document for a `(brand_id, locale, market_code, site_profile_code)` target from the draft tree. Default `format: outline` (headings, section text, `snippets[]` status content/empty/missing, placeholders, language hint); `format: html` returns markup with inline images stripped. | `content:read` |
+| `get_document_preview_matrix` | Compact preview for every audience brand × locale at once, incl. `headings_not_in_all_targets` (composite of `get_document` + `get_document_preview`) | `content:read` |
 | `list_document_unpublished_refs` | Pre-publish cascade discovery: which referenced snippets/variables/overrides have unpublished drafts for the given publication targets (each target addressed by `site_id` or `brand_id`) | `content:read` |
 | `get_document_applicability` | Read a document's business scope ("Gilt für": brands/sites/markets/site-profiles) + any live delivery now out-of-scope (read-only conflicts) | `content:read` |
 | `set_document_applicability` | Replace a document's business scope across the four axes (full replace per axis; enforced at publish time; never publishes) | `content:write` |

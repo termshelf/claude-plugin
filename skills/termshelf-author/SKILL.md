@@ -1,6 +1,6 @@
 ---
 name: termshelf-author
-description: Author brands, sites, domains, document types, documents (with sections and blocks), and per-locale variable / snippet overrides in TermShelf via the external Management API. Use this when the user wants to onboard a new brand or website into TermShelf — typically phrased as "set up Acme as a new brand", "create a TermShelf site for our DE store", "add overrides for the X variable across locales", "do the legal-text rollout for our new website", or "draft a privacy policy document with these snippets". DO NOT use this for read-only integration code generation (that's the `termshelf` skill, Tier 1).
+description: Author brands, sites, domains, document types, documents (with sections and blocks), and per-locale variable / snippet overrides in TermShelf via the external Management API. Use this when the user wants to onboard a new brand or website into TermShelf — typically phrased as "set up Acme as a new brand", "create a TermShelf site for our DE store", "add overrides for the X variable across locales", "do the legal-text rollout for our new website", "draft a privacy policy document with these snippets", or EDITS to an existing (often multi-brand) document such as "change the AGB for brand X only", "add a withdrawal section only for brand Y", "why does brand Z show English text". DO NOT use this for read-only integration code generation (that's the `termshelf` skill, Tier 1).
 ---
 
 # Authoring TermShelf brands, sites, documents & overrides
@@ -14,6 +14,26 @@ You are helping an operator onboard a new brand or website into **TermShelf** �
 5. **Verify the result against the live preview**, iterating fixes until every (brand, locale) renders correctly.
 6. **Stop before publishing.** Publication stays operator-driven, in the TermShelf customer-app.
 
+## How TermShelf documents work — read this first
+
+Every document task starts from this model. Do not make the operator explain it; do not infer it from one document's tree.
+
+1. **A document is shared.** Its own blocks (`heading`, `paragraph`, `list`, `note`, `table`, `image`) form the **corpus**, and the corpus is delivered verbatim to **every brand in the document's audience**. `get_document` returns `brand_context` with the audience (`brands[]`, with `is_live` and `live_targets`), `is_multi_brand`, and a `corpus_notice`.
+2. **Variance lives outside the document.** Brand-, locale-, market- or profile-specific content goes into **workspace snippets** (rich-text clauses, referenced via `snippet_reference` blocks) and **workspace variables** (`{{key}}`), with **overrides** per axis tuple. The most specific override wins: `(brand+market+profile+locale)` > `(brand+locale)` > `(locale)` > the snippet's/variable's default.
+3. **The patterns.**
+   | Need | Build it as |
+   |---|---|
+   | Same text for every brand | Corpus block, or a snippet with default content only |
+   | Different wording per brand | Snippet: shared text as default + brand-scoped override with the alternative |
+   | A value that differs per brand (company name, e-mail, address) | Variable `{{key}}` + brand override (usually `is_locale_agnostic: true`) |
+   | **A section only some brands have** | **Optional snippet** (`is_optional: true`), **empty default**, content override only for those brands (per locale). Every other brand renders nothing there. Put such sections **at the end** of the document so the shared numbering/structure stays identical for all brands. |
+   | Whole document only for some brands | `set_document_applicability` (brand axis), not empty content |
+
+   Do **not** build "brand-only" content with empty overrides for the other brands: an override with empty blocks can never be published, so those brands would fail with `unresolved_snippet` (or silently get the default). The preview flags such rows as `ignored_empty_overrides`.
+4. **Read snippet descriptions.** They often explain the snippet's brand pattern. When you create a snippet with a pattern, write it into `description` (e.g. "Only TermShelf has this section; empty default, content via TermShelf override").
+5. **Draft = next version.** Each document has exactly one working draft, and that draft **is the next version**. Every write refreshes the draft in place. There are no intermediate versions, and nothing goes live: Public Delivery serves only published versions, and you cannot publish. So editing a live document is safe, and you do not need to warn the operator that "this changes the live text". `list_document_publications` shows the live state (version, ETag, targets, first published) and whether the draft differs from it. Use it instead of probing the public Delivery API.
+6. **Snippet status in previews.** `snippets[].status` is `content` (source `override` or `default`), `empty` (optional snippet, intentionally nothing, fine), or `missing` (publishing that target **fails** with `unresolved_snippet`). Only `missing` ends up in `unresolved_snippets`.
+
 ## What the MCP server exposes
 
 When this skill is active, Claude Code has these MCP tools available under the `termshelf-author` server:
@@ -25,14 +45,16 @@ When this skill is active, Claude Code has these MCP tools available under the `
 - `list_markets`, `get_market` — the workspace's markets (variance axis; filter by `status`)
 - `list_site_profiles`, `get_site_profile` — the workspace's site profiles (second variance axis; filter by `status`)
 - `list_workspace_variables`, `get_workspace_variable` — every `{{key}}` placeholder + `is_locale_agnostic` + `overrides_count` + the live draft `value` and the last-published value + `has_unpublished_changes` (true iff the draft would actually persist a new version on publish)
-- `list_workspace_snippets`, `get_workspace_snippet` — reusable rich-text clauses + `working_blocks` (draft) + `published_blocks` + `has_unpublished_changes`
+- `list_workspace_snippets`, `get_workspace_snippet` — reusable rich-text clauses + `working_blocks` (draft) + `published_blocks` + `has_unpublished_changes` + `is_optional` + `description` (read it, it often states the brand pattern). `q` searches key, title and description.
 - `list_locales` — the locale codes currently active in the workspace
-- `list_documents`, `get_document` — documents in the workspace. `list_documents` returns the index (id, slug, title, document_type.code); filter by `document_type_code` to narrow. `get_document` returns the full structured tree (sections with their ordered blocks) for a single document.
+- `list_documents`, `get_document` — documents in the workspace. `list_documents` returns the index (id, slug, title, document_type.code); filter by `document_type_code` to narrow. `get_document` returns the full structured tree (sections with their ordered blocks) for a single document **plus `brand_context`**: the audience brands with live state, and for every `snippet_reference` block its coverage per brand × locale (`summary.content` / `summary.empty` / `summary.missing`, entries `brandId/locale`).
+- `list_document_publications` — what is live for a document: `live[]` rows (brand / site / locale / market / profile, `version_number`, `etag`, `first_published_at`), `latest_published_version_number`, the `draft` (with `differs_from_live`), and recent publication requests with per-target failure reasons.
 - `list_document_types`, `get_document_type` — taxonomy entries a document attaches to (`privacy`, `imprint`, `terms`, …). Use these BEFORE `create_document` to pick the `document_type_id` / `document_type_code` to pass.
 - `list_document_sections`, `list_document_blocks` — direct access to a document's structural children, ordered by position.
 - `list_snippet_overrides`, `get_snippet_override` — existing snippet-override rows scoped to a snippet, with their working_blocks draft and `has_unpublished_changes`. Use this to fetch an override ID before updating or archiving it.
 - `list_variable_overrides`, `get_variable_override` — same shape for variable overrides; also carries `has_unpublished_changes`.
-- `get_document_preview` — render a document as fully-resolved HTML for a `(brand_id, locale, market_code, site_profile_code)` tuple. Resolves from the **draft working tree** (working_blocks of overrides + working_blocks of snippets + draft variable values), so changes made via the write tools below show up immediately — no publish step required. Use this to **verify** override resolution after authoring; surfaces `unresolved_variables`, `unresolved_snippets`, and the rendered text you can inspect for cross-locale leakage and placeholder stubs.
+- `get_document_preview` — render a document for one `(brand_id, locale, market_code, site_profile_code)` tuple from the **draft working tree** (working_blocks of overrides and snippets, draft variable values), so changes from the write tools below show up immediately, without publishing. The default `format: "outline"` is compact: headings, per-section plain text, `unresolved_variables`, `unresolved_snippets`, `snippets[]` status, `ignored_empty_overrides`, `placeholders_found`, and a `language` hint (`foreign_language_suspected`). `format: "html"` returns the markup, with inline base64 images stripped.
+- `get_document_preview_matrix` — the same check for **all audience brands × locales at once** (from `brand_context`). It returns a compact result per target plus `headings_not_in_all_targets`, which shows brand-only sections at a glance. This is the default verification step for multi-brand documents.
 - `list_document_unpublished_refs` — pre-publish cascade discovery. Given a document and the publication targets the operator is about to publish to, returns the snippets, variables, snippet-overrides and variable-overrides whose working draft differs from the published version. Use this when the operator asks "what drafts are still pending for this document?" — surfaces the same checklist the customer-app's publish page renders. Read-only.
 
 The `has_unpublished_changes` flag is true when the draft would actually persist as a new version on publish (i.e. the canonical hash of `working_blocks` differs from the latest published version's `content_hash`). An empty draft is never dirty, since the publisher refuses to publish it. Use this flag to answer "which authored items are still pending publish?" without diffing JSON blocks yourself.
@@ -48,7 +70,7 @@ The `has_unpublished_changes` flag is true when the draft would actually persist
 - `create_snippet_override`, `update_snippet_override`, `archive_snippet_override`, `restore_snippet_override` — per-locale, per-target rich-text override. Snippet overrides use soft archive (not hard delete); restore is rejected if it would create an ambiguity with another live override.
 
 **Workspace-level writes** (require the `content:write` ability — confirm with the operator before calling):
-- `create_workspace_snippet`, `update_workspace_snippet`, `archive_workspace_snippet`, `restore_workspace_snippet`
+- `create_workspace_snippet`, `update_workspace_snippet`, `archive_workspace_snippet`, `restore_workspace_snippet` — `is_optional: true` marks a snippet that may render nothing for targets without a matching override (the brand-only section pattern).
 - `create_workspace_variable`, `update_workspace_variable`, `delete_workspace_variable`
 - `create_document_type`, `update_document_type`, `activate_document_type`, `deactivate_document_type` — the taxonomy a document attaches to. The `code` is immutable once persisted.
 - `create_document`, `update_document`, `archive_document`, `restore_document`, `delete_document` — the document row itself. `create_document` only stages the document; sections and blocks are authored separately. `create_document` takes an optional `brand_id` to HARD-PIN the document to one brand (ADR-107, whole-document brand divergence); documents are NOT website-bound (no `site_id`). `delete_document` is rejected when publications / active reviews / pending patches still reference the document — archive instead in that case.
@@ -205,7 +227,7 @@ Surface each tool's result back briefly ("Brand Acme Legal created (id=42)") so 
 
 **This step is not optional.** Variable and snippet override correctness is invisible from the write responses alone — a `create_*` or `update_*` returning 2xx only proves persistence, not that the rendered document for this brand and locale looks right. The preview is the ground truth, and it now reads from the **draft working tree** (working_blocks of overrides + working_blocks of snippets + draft variable values), so authoring writes show up in the preview immediately — no intermediate publish step required.
 
-For **every** document the brand will publish (you discovered these via `list_documents` in step 2), and for **every** locale the brand supports (from `supported_locale_codes`), call:
+Start with `get_document_preview_matrix(document_id=…, brand_ids=[…])` for each document: one call covers every locale and flags the problem targets. Then, for **every** document the brand will publish (you discovered these via `list_documents` in step 2) and **every** locale the brand supports (from `supported_locale_codes`) that is not clean, call:
 
 ```
 get_document_preview(document_id=…, brand_id=…, locale=…)
@@ -216,8 +238,8 @@ Then inspect the response. Treat the loop below as authoritative — do not decl
 1. **Unresolved variables** — `unresolved_variables` must be `[]`. If a key is listed, the variable has no resolution for this `(brand, locale)`. Decide why:
    - If the workspace `published_value` is null on purpose (brand-specific by design, e.g. `brand.name`, `privacy_policy.contact_email`) → create the missing `create_variable_override(variable_id, brand_id, locale, value)`.
    - If the variable should have a workspace default but doesn't → tell the operator; this is a workspace-level fix, not a brand-level one.
-2. **Unresolved snippets** — `unresolved_snippets` must be `[]`. A listed snippet id means the document references a snippet that resolved to nothing for this target. Almost always: the snippet exists but the override scope doesn't match → create `create_snippet_override` for `(brand_id, locale)`. If the id maps to a hard-deleted snippet, tell the operator — that's a workspace bug, not an override gap.
-3. **Rendered text quality** — read the `html`. Flag any of:
+2. **Unresolved snippets** — `unresolved_snippets` must be `[]` (`snippets[].status == "missing"`). Publishing this target would fail. Usually the snippet exists but no override matches → `create_snippet_override` for `(brand_id, locale)`. If the brand intentionally has no such section, make the snippet optional (`update_workspace_snippet` with `is_optional: true`) instead of adding an empty override. `status: "empty"` on an optional snippet is fine. If the id maps to a hard-deleted snippet, tell the operator: that is a workspace bug, not an override gap.
+3. **Rendered text quality** — read the outline's section texts (and `language.foreign_language_suspected` / `placeholders_found`). Flag any of:
    - **Cross-locale leakage.** The DE preview must read as German throughout; the EN preview must read as English throughout. If the rendered HTML of a `locale=de` preview contains an English block (the workspace parent of some snippet/variable was authored in English and no DE override exists), the brand needs a DE override for that snippet/variable. Same in reverse for `locale=en`. Common signals: function words like `the / and / for / with` in a DE preview, or `der / die / und / für / mit / nicht` in an EN preview.
    - **Placeholder stubs surviving into the output.** Bare hyphens (`-`), token-style words like `ab`, `TODO`, `TBD`, `[Platzhalter…]`, `<!--`, or single-character "blocks" that look like authoring scaffolding rather than legal copy. These usually mean a workspace parent was never finished and the brand needs a real override.
 
@@ -335,7 +357,7 @@ When the document tree is in place and every preview is clean, tell the operator
 
 ### Editing an existing document
 
-If the operator asks for an edit (not a new document), the same primitives apply:
+If the operator asks for an edit (not a new document), first follow **Editing a shared multi-brand document** below whenever `brand_context.is_multi_brand` is true. The same primitives apply:
 - `get_document(document_id)` → see the current tree.
 - `upsert_document_section` / `upsert_document_block` by the existing `key` → updates that row in place.
 - `delete_document_section` / `delete_document_block` → removes; positions are repacked.
@@ -350,6 +372,21 @@ When every override is in place AND every preview is clean, tell the operator:
 > "All overrides created and verified — every `(document, brand, locale)` preview renders cleanly. Review them at <link-to-site-or-overrides-page-in-customer-app> and publish when you're satisfied."
 
 You do **not** call any publish endpoint. The token deliberately lacks `publish:trigger`. Publishing requires the operator's eyes on the diff.
+
+## Editing a shared multi-brand document
+
+Use this flow whenever the operator asks to change an existing document, especially "for brand X only".
+
+1. **Orient** (in parallel): `get_document(document_id)` (read `brand_context` first), `list_document_publications(document_id)` (what is live, for which brands and versions), and `list_workspace_snippets` for every snippet referenced (read their `description`s, `is_optional`, `overrides_count`). For a snippet you will touch, also call `list_snippet_overrides`.
+2. **Classify the change.** Does it apply to every brand in `brand_context.brands`?
+   - **All brands:** edit the corpus block, or the snippet's default content.
+   - **Some brands, different wording:** do not touch the corpus. If the text is a corpus block today, extract it into a snippet whose default equals the current text (so the other brands stay byte-identical), repoint the block via `upsert_document_block` with `kind: snippet_reference`, and add a brand-scoped override with the new wording.
+   - **Some brands, extra section:** an optional snippet (`is_optional: true`, empty default) with content overrides for those brands (each locale), referenced from a section at the end of the document.
+   - **One brand needs a completely different document:** stop and ask. That is a separate document plus applicability, not overrides.
+3. **Propose, then wait for approval**, as in the other flows. The plan states which brands each change reaches.
+4. **Execute.** A `_notice` on an `upsert_document_block` result means you just wrote corpus text into a multi-brand document. Make sure that was intended.
+5. **Verify** with `get_document_preview_matrix(document_id)`. It is done when every target is `ok`, `headings_not_in_all_targets` lists only the intended brand-only sections, and no target lists `ignored_empty_overrides`. Drill into a single target with `get_document_preview` when something is off.
+6. **Hand off.** Tell the operator what changed per brand, which drafts must be published (`list_document_unpublished_refs`), and that the live version (from `list_document_publications`) stays untouched until they publish.
 
 ## Things you do NOT do
 

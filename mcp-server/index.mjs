@@ -210,12 +210,180 @@ const idempotencyInput = {
     ),
 };
 
+// --- preview compaction -----------------------------------------------------
+//
+// A full preview HTML can be huge (inline base64 images made one 280k
+// chars). Agents mostly need structure + text + resolution status, so the
+// preview tools default to a compact outline and strip data: URIs from HTML.
+
+const DATA_URI_RE = /data:[a-z0-9.+\/-]+;base64,[A-Za-z0-9+\/=\s]+/gi;
+
+function stripInlineImages(html) {
+  return String(html ?? "").replace(
+    DATA_URI_RE,
+    (m) => `data:[inline image stripped, ${m.length} chars]`,
+  );
+}
+
+function decodeEntities(text) {
+  return text
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#0?39;|&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)));
+}
+
+function htmlToText(html) {
+  return decodeEntities(
+    String(html ?? "")
+      .replace(/<(script|style)[\s\S]*?<\/\1>/gi, " ")
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<\/(p|li|h[1-6]|tr|div|section)>/gi, "\n")
+      .replace(/<[^>]+>/g, " "),
+  )
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n\s*\n+/g, "\n")
+    .trim();
+}
+
+const STOPWORDS = {
+  de: ["der", "die", "das", "und", "ist", "nicht", "mit", "für", "von", "zu", "den", "dem", "ein", "eine", "auf", "werden", "wir", "sie", "ihre", "oder", "bei", "nach", "sind"],
+  en: ["the", "and", "of", "to", "is", "are", "with", "for", "this", "that", "you", "we", "be", "by", "your", "or", "on", "our", "any", "will", "may"],
+};
+
+function languageHint(text, locale) {
+  const words = text.toLowerCase().match(/[a-zäöüß]+/g) ?? [];
+  const counts = {};
+  for (const [lang, list] of Object.entries(STOPWORDS)) {
+    const set = new Set(list);
+    counts[lang] = words.filter((w) => set.has(w)).length;
+  }
+  const total = Object.values(counts).reduce((a, b) => a + b, 0);
+  const expected = String(locale ?? "").toLowerCase().slice(0, 2);
+  let dominant = null;
+  if (total >= 5) {
+    dominant = Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0];
+  }
+  const foreignShare =
+    expected in counts && total > 0 ? 1 - counts[expected] / total : null;
+  return {
+    stopword_counts: counts,
+    dominant_language: dominant,
+    // >25% of function words from another language usually means a block
+    // (often a snippet default) was not overridden for this locale.
+    foreign_language_suspected:
+      foreignShare !== null && total >= 5 && foreignShare > 0.25,
+  };
+}
+
+const PLACEHOLDER_RE = /\[[a-z0-9_.-]+: missing\]|\bTODO\b|\bTBD\b|\[Platzhalter[^\]]*\]/gi;
+
+function outlineFromPreview(preview, { maxSectionChars = 1500 } = {}) {
+  const html = String(preview?.html ?? "");
+  const headings = [];
+  const re = /<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi;
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    headings.push({ level: Number(m[1]), text: htmlToText(m[2]) });
+  }
+  // Split body text at h2 boundaries so each section is readable on its own.
+  const parts = html.split(/(?=<h2[^>]*>)/i);
+  const sections = parts
+    .map((part) => {
+      const h = part.match(/<h2[^>]*>([\s\S]*?)<\/h2>/i);
+      const text = htmlToText(part);
+      return {
+        heading: h ? htmlToText(h[1]) : null,
+        text:
+          text.length > maxSectionChars
+            ? `${text.slice(0, maxSectionChars)} … [${text.length - maxSectionChars} more chars]`
+            : text,
+      };
+    })
+    .filter((sec) => sec.text !== "");
+  const fullText = htmlToText(html);
+  const snippets = Array.isArray(preview?.snippets) ? preview.snippets : [];
+  return {
+    target: preview?.target,
+    unresolved_variables: preview?.unresolved_variables ?? [],
+    unresolved_snippets: preview?.unresolved_snippets ?? [],
+    snippets_empty_on_purpose: snippets
+      .filter((x) => x.status === "empty")
+      .map((x) => x.snippet_key ?? x.snippet_id),
+    snippets_missing: snippets
+      .filter((x) => x.status === "missing")
+      .map((x) => x.snippet_key ?? x.snippet_id),
+    ignored_empty_overrides: snippets
+      .filter((x) => x.ignored_empty_override_id)
+      .map((x) => ({ snippet: x.snippet_key ?? x.snippet_id, override_id: x.ignored_empty_override_id })),
+    snippets,
+    placeholders_found: [...new Set(fullText.match(PLACEHOLDER_RE) ?? [])],
+    language: languageHint(fullText, preview?.target?.locale),
+    text_length: fullText.length,
+    html_length: html.length,
+    headings,
+    sections,
+  };
+}
+
+// brand_context cache per document, so corpus writes can warn without an
+// extra round-trip every time.
+const brandContextCache = new Map();
+
+function rememberBrandContext(documentId, ctx) {
+  if (ctx && typeof ctx === "object") brandContextCache.set(Number(documentId), ctx);
+}
+
+async function brandContextFor(documentId) {
+  const id = Number(documentId);
+  if (brandContextCache.has(id)) return { ok: true, ctx: brandContextCache.get(id) };
+  const result = await callManagement("GET", `/documents/${id}`);
+  if (!result.ok) return { ok: false, result };
+  rememberBrandContext(id, result.data?.brand_context);
+  return { ok: true, ctx: result.data?.brand_context ?? null };
+}
+
+function previewQuery({ brand_id, locale, market_code, site_profile_code }) {
+  const params = new URLSearchParams();
+  if (brand_id !== undefined && brand_id !== null) params.set("brand_id", String(brand_id));
+  if (locale) params.set("locale", locale);
+  if (market_code) params.set("market_code", market_code);
+  if (site_profile_code) params.set("site_profile_code", site_profile_code);
+  const qs = params.toString();
+  return qs ? `?${qs}` : "";
+}
+
+function jsonResult(data) {
+  return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+}
+
 // --- server + tools ---------------------------------------------------------
 
-const server = new McpServer({
-  name: "termshelf",
-  version: "2.5.1",
-});
+// Server-level instructions: shown to the client whenever this server is
+// connected — even when the `termshelf-author` skill is not loaded. They
+// carry the content model an agent must know BEFORE touching a document,
+// so the operator never has to explain it.
+const SERVER_INSTRUCTIONS = `TermShelf content model — read before editing any document:
+
+1. Documents are SHARED across brands. A document's own blocks (heading, paragraph, list, note, table, image) are delivered verbatim to EVERY brand in its audience. get_document returns \`brand_context\`: the audience brands, which of them are live, and per snippet_reference how it resolves per brand × locale.
+2. Brand-specific content never goes into the document corpus. It lives in workspace snippets (rich-text clauses) and variables ({{key}}) with per-brand / per-locale overrides, referenced from the document. Most-specific override wins: (brand+market+profile+locale) > (brand+locale) > (locale) > the snippet's default.
+3. Brand-variant wording: a snippet whose default carries the shared text, plus a brand-scoped override with the alternative text.
+4. Section only some brands have: an OPTIONAL snippet (is_optional=true) with EMPTY default and content overrides only for those brands. Other brands render nothing there — no per-brand "empty" overrides needed (an override with empty blocks cannot be published). Put brand-only sections at the end of the document so shared numbering/structure stays stable.
+5. Drafts: every document has exactly ONE working draft that IS the next version. Each write refreshes that draft in place — no intermediate versions, nothing goes live. Public delivery serves only published versions; this MCP cannot publish. list_document_publications shows what is live (version, ETag, targets) and whether the draft differs.
+6. Verify with get_document_preview_matrix (all brands × locales at once, compact) and get_document_preview (one target; snippets[].status = content | empty (optional, fine) | missing (publish of that target would fail)).
+
+For full workflows load the termshelf-author skill.`;
+
+const server = new McpServer(
+  {
+    name: "termshelf",
+    version: "2.5.1",
+  },
+  { instructions: SERVER_INSTRUCTIONS },
+);
 
 // === Read tools ============================================================
 
@@ -289,7 +457,7 @@ server.tool(
 
 server.tool(
   "list_workspace_snippets",
-  "List workspace snippets (reusable rich-text clauses). Each row exposes the published blocks, is_locale_agnostic, and overrides_count. Archived snippets are excluded by default.",
+  "List workspace snippets (reusable rich-text clauses). Each row exposes the published blocks, is_locale_agnostic, is_optional (may render empty for targets without a matching override), description (often explains the snippet's brand pattern — read it) and overrides_count. Archived snippets are excluded by default.",
   {
     q: z
       .string()
@@ -353,7 +521,7 @@ server.tool(
 
 server.tool(
   "get_document_preview",
-  "Render a document as fully-resolved HTML for a (brand, locale, market, profile) target — the same Vorschau the customer-app's authoring tab shows. Use this AFTER creating variable/snippet overrides to verify they resolve correctly per (brand, locale): inspect `html` for cross-locale leakage and obvious placeholders, and `unresolved_variables` / `unresolved_snippets` for publish blockers. Omit a target axis to fall back to the workspace default for that axis.",
+  "Render a document for ONE (brand, locale, market, profile) target from the DRAFT working tree (what publishing now would produce; nothing goes live). Default `format: 'outline'` returns a compact view: headings, per-section plain text, `unresolved_variables`, `unresolved_snippets`, `snippets[]` (per referenced snippet: status `content` with source override/default, `empty` = optional snippet intentionally renders nothing (fine), `missing` = publishing this target would FAIL with unresolved_snippet), `ignored_empty_overrides` (an override with empty blocks can't be published — use an optional snippet instead), `placeholders_found` and a `language` hint (foreign_language_suspected → a snippet/variable lacks an override for this locale). Use `format: 'html'` only when you need the markup (inline base64 images are stripped unless keep_inline_images=true). To check all brands × locales at once use get_document_preview_matrix.",
   {
     document_id: z
       .number()
@@ -366,7 +534,7 @@ server.tool(
       .positive()
       .optional()
       .describe(
-        "Brand to resolve overrides against. Required to verify per-brand overrides created via create_variable_override / create_snippet_override.",
+        "Brand to resolve overrides against. Required to verify per-brand overrides (see get_document → brand_context.brands for the audience).",
       ),
     locale: z
       .string()
@@ -383,21 +551,138 @@ server.tool(
       .max(64)
       .optional()
       .describe("Site profile code (must already exist in the workspace)."),
+    format: z
+      .enum(["outline", "html"])
+      .optional()
+      .describe("outline (default, compact) or html (full rendered markup)."),
+    keep_inline_images: z
+      .boolean()
+      .optional()
+      .describe("html format only: keep base64 data: image URIs (can be hundreds of KB)."),
   },
-  async ({ document_id, brand_id, locale, market_code, site_profile_code }) => {
-    const params = new URLSearchParams();
-    if (brand_id !== undefined) params.set("brand_id", String(brand_id));
-    if (locale) params.set("locale", locale);
-    if (market_code) params.set("market_code", market_code);
-    if (site_profile_code) params.set("site_profile_code", site_profile_code);
-    const qs = params.toString();
-    return asToolResult(
+  async ({ document_id, format, keep_inline_images, ...target }) => {
+    const result = await callManagement(
+      "GET",
+      `/documents/${document_id}/preview${previewQuery(target)}`,
+    );
+    if (!result.ok) return asToolResult(result);
+    if ((format ?? "outline") === "outline") {
+      return jsonResult(outlineFromPreview(result.data));
+    }
+    const data = { ...result.data };
+    if (!keep_inline_images) data.html = stripInlineImages(data.html);
+    return jsonResult(data);
+  },
+);
+
+server.tool(
+  "get_document_preview_matrix",
+  "Preview a document for MANY targets at once (default: every audience brand from get_document → brand_context × every document locale) and return a compact per-target summary — headings, unresolved variables/snippets, snippets empty on purpose, placeholders, foreign-language hint, text length — plus `headings_not_in_all_targets` to spot brand-only sections. No HTML. Use this as the verification step after editing a multi-brand document, then drill into single targets with get_document_preview.",
+  {
+    document_id: z.number().int().positive(),
+    brand_ids: z
+      .array(z.number().int().positive())
+      .optional()
+      .describe("Restrict to these brands. Default: brand_context.brands."),
+    locales: z
+      .array(z.string().max(32))
+      .optional()
+      .describe("Restrict to these locales. Default: brand_context.locales."),
+    market_code: z.string().max(16).optional(),
+    site_profile_code: z.string().max(64).optional(),
+    max_targets: z
+      .number()
+      .int()
+      .positive()
+      .max(60)
+      .optional()
+      .describe("Safety cap on brand × locale combinations (default 30)."),
+  },
+  async ({ document_id, brand_ids, locales, market_code, site_profile_code, max_targets }) => {
+    const ctxRes = await brandContextFor(document_id);
+    if (!ctxRes.ok) return asToolResult(ctxRes.result);
+    const ctx = ctxRes.ctx ?? {};
+    const brands = (brand_ids ?? (ctx.brands ?? []).map((b) => b.id)).filter(Boolean);
+    const brandNames = Object.fromEntries((ctx.brands ?? []).map((b) => [b.id, b.name]));
+    const locs = locales ?? ctx.locales ?? [];
+    const combos = [];
+    for (const brand_id of brands.length ? brands : [undefined]) {
+      for (const locale of locs.length ? locs : [undefined]) {
+        combos.push({ brand_id, locale, market_code, site_profile_code });
+      }
+    }
+    const cap = max_targets ?? 30;
+    const selected = combos.slice(0, cap);
+    const results = await Promise.all(
+      selected.map(async (t) => {
+        const r = await callManagement(
+          "GET",
+          `/documents/${document_id}/preview${previewQuery(t)}`,
+        );
+        if (!r.ok) return { target: t, error: r.error, http_status: r.status };
+        const o = outlineFromPreview(r.data);
+        return {
+          target: { ...o.target, brand_name: brandNames[t.brand_id] ?? null },
+          ok:
+            o.unresolved_variables.length === 0 &&
+            o.unresolved_snippets.length === 0 &&
+            o.placeholders_found.length === 0 &&
+            !o.language.foreign_language_suspected,
+          unresolved_variables: o.unresolved_variables,
+          unresolved_snippets: o.snippets_missing,
+          snippets_empty_on_purpose: o.snippets_empty_on_purpose,
+          ignored_empty_overrides: o.ignored_empty_overrides,
+          placeholders_found: o.placeholders_found,
+          language: o.language,
+          text_length: o.text_length,
+          headings: o.headings.map((h) => `${"#".repeat(h.level)} ${h.text}`),
+        };
+      }),
+    );
+    const okResults = results.filter((r) => !r.error);
+    const headingSets = okResults.map((r) => new Set(r.headings));
+    const allHeadings = [...new Set(okResults.flatMap((r) => r.headings))];
+    const notInAll = allHeadings
+      .filter((h) => headingSets.some((set) => !set.has(h)))
+      .map((h) => ({
+        heading: h,
+        present_in: okResults
+          .filter((r) => r.headings.includes(h))
+          .map((r) => `${r.target.brand_name ?? r.target.brand_id}/${r.target.locale}`),
+      }));
+    return jsonResult({
+      document_id,
+      is_multi_brand: ctx.is_multi_brand ?? null,
+      targets_total: combos.length,
+      targets_checked: selected.length,
+      truncated: combos.length > selected.length,
+      all_clean: results.every((r) => r.ok),
+      headings_not_in_all_targets: notInAll,
+      results,
+    });
+  },
+);
+
+server.tool(
+  "list_document_publications",
+  "What is LIVE for a document: `live[]` (one row per delivered brand/site/locale/market/profile tuple with version_number, first_published_at, ETag, publication_id), `live_version_numbers`, `latest_published_version_number`, `draft` (the single working draft = next version, with `differs_from_live`), and recent `publications[]` with per-target status / failure_reason (e.g. unresolved_snippet). Use this instead of probing the public Delivery API. Read-only.",
+  {
+    document_id: z.number().int().positive(),
+    limit: z
+      .number()
+      .int()
+      .positive()
+      .max(50)
+      .optional()
+      .describe("How many recent publication requests to include (default 10)."),
+  },
+  async ({ document_id, limit }) =>
+    asToolResult(
       await callManagement(
         "GET",
-        `/documents/${document_id}/preview${qs ? `?${qs}` : ""}`,
+        `/documents/${document_id}/publications${limit ? `?limit=${limit}` : ""}`,
       ),
-    );
-  },
+    ),
 );
 
 server.tool(
@@ -1007,7 +1292,7 @@ server.tool(
 
 server.tool(
   "create_snippet_override",
-  "Create a workspace-snippet override scoped by (locale, optionally brand_id / market_id / site_profile_id). If `blocks` is omitted, the server seeds the override's working_blocks from the structurally-closest parent. Pass blocks=[] to force an empty draft. Returns the persisted override.",
+  "Create a workspace-snippet override scoped by (locale, optionally brand_id / market_id / site_profile_id). If `blocks` is omitted, the server seeds the override's working_blocks from the structurally-closest parent. Pass blocks=[] to force an empty draft — but NOTE: an override with empty blocks can never be published, so it does NOT make the snippet render empty for this target (delivery falls back to the default, or fails with unresolved_snippet). To have a section only for some brands, mark the snippet is_optional=true and create content overrides only for those brands. Returns the persisted override.",
   {
     snippet_id: z.number().int().positive(),
     locale: z.string().min(1).max(32),
@@ -1081,7 +1366,7 @@ server.tool(
 
 server.tool(
   "update_snippet_override",
-  "Edit an existing snippet override's working_blocks draft. Send the full block list — the action replaces working_blocks, it does not patch individual blocks. Pass working_blocks=[] to clear the draft (the snippet then falls back to a less-specific override or the parent at render time).",
+  "Edit an existing snippet override's working_blocks draft. Send the full block list — the action replaces working_blocks, it does not patch individual blocks. Pass working_blocks=[] to clear the draft (the override is then ignored: an empty override cannot be published, so the snippet falls back to a less-specific override or the default — or renders nothing if the snippet is_optional).",
   {
     snippet_id: z.number().int().positive(),
     override_id: z.number().int().positive(),
@@ -1239,12 +1524,24 @@ server.tool(
       .max(64)
       .describe("Workspace-unique key, referenced from document blocks."),
     title: z.string().min(1).max(255),
-    description: z.string().max(500).optional(),
+    description: z
+      .string()
+      .max(500)
+      .optional()
+      .describe(
+        "Explain the snippet's role, esp. its brand pattern (e.g. 'Only brand X has this section; empty default, content via override for X'). Future agents read this.",
+      ),
     is_locale_agnostic: z.boolean().optional(),
+    is_optional: z
+      .boolean()
+      .optional()
+      .describe(
+        "true = the snippet may resolve to NOTHING: targets without a matching override (and no default content) render an empty slot instead of failing publish with unresolved_snippet. Use for sections only some brands have: leave the default empty and add content overrides for those brands only.",
+      ),
     working_blocks: z
       .array(z.record(z.string(), z.unknown()))
       .optional()
-      .describe("Initial rich-text draft."),
+      .describe("Initial rich-text draft (the default content). Leave empty for an optional brand-only snippet."),
     ...idempotencyInput,
   },
   async ({ idempotency_key, ...body }) =>
@@ -1258,12 +1555,18 @@ server.tool(
 
 server.tool(
   "update_workspace_snippet",
-  "Edit a workspace snippet's title, description, working_blocks draft, or is_locale_agnostic flag. Omitted fields are left untouched. Pass description=null to clear it. Requires `content:write`.",
+  "Edit a workspace snippet's title, description, working_blocks draft, is_locale_agnostic or is_optional flag. Omitted fields are left untouched. Pass description=null to clear it. Clearing working_blocks to [] is allowed when the snippet has an override or is optional. Requires `content:write`.",
   {
     snippet_id: z.number().int().positive(),
     title: z.string().min(1).max(255).optional(),
     description: z.string().max(500).nullable().optional(),
     is_locale_agnostic: z.boolean().optional(),
+    is_optional: z
+      .boolean()
+      .optional()
+      .describe(
+        "true = render nothing (instead of failing publish) for targets where no override matches and the default is empty. See create_workspace_snippet.",
+      ),
     working_blocks: z.array(z.record(z.string(), z.unknown())).optional(),
     ...idempotencyInput,
   },
@@ -1530,10 +1833,13 @@ server.tool(
 
 server.tool(
   "get_document",
-  "Fetch a single document by ID, including its full structured tree (sections with their ordered blocks). Use this after a series of section/block writes to inspect the persisted draft, or as the starting point for an edit.",
+  "Fetch a single document by ID: its full structured draft tree (sections with ordered blocks) PLUS `brand_context` — the audience brands (`brands[]` with `is_live` / `live_targets`), `is_multi_brand`, a `corpus_notice`, and `snippet_references[]` showing for every snippet_reference block how it resolves per brand × locale (`summary.content` / `summary.empty` / `summary.missing`, entries 'brandId/locale'). ALWAYS read brand_context before editing: in a multi-brand document every non-snippet block reaches ALL listed brands, so brand-specific text must go into a snippet override, not the corpus. The tree is the single working draft (= the next version); live delivery is unaffected by edits.",
   { document_id: z.number().int().positive() },
-  async ({ document_id }) =>
-    asToolResult(await callManagement("GET", `/documents/${document_id}`)),
+  async ({ document_id }) => {
+    const result = await callManagement("GET", `/documents/${document_id}`);
+    if (result.ok) rememberBrandContext(document_id, result.data?.brand_context);
+    return asToolResult(result);
+  },
 );
 
 server.tool(
@@ -1863,7 +2169,7 @@ server.tool(
 
 server.tool(
   "upsert_document_block",
-  "Create-or-update a document block by stable `key`. The `key` is unique per document — moving a block to a different section is allowed by passing the new section's id. `kind` controls payload validation; the supported kinds are: heading, paragraph, list, note, table, image, snippet_reference. Payload shapes are kind-specific (see below). Variable references like `{{key}}` inside text are validated against the workspace's variables. A `snippet_reference` MAY point to a not-yet-published DRAFT snippet — it only needs to exist and not be archived (preview resolves the draft; live delivery needs an operator publish — the MCP cannot publish). Requires `content:write`.",
+  "Create-or-update a document block by stable `key`. The `key` is unique per document — moving a block to a different section is allowed by passing the new section's id. `kind` controls payload validation; the supported kinds are: heading, paragraph, list, note, table, image, snippet_reference. Payload shapes are kind-specific (see below). Variable references like `{{key}}` inside text are validated against the workspace's variables. MULTI-BRAND: every non-snippet block is shared by ALL brands in the document's audience (get_document → brand_context) — brand-specific text belongs in a snippet override, never in a corpus block. Writes only refresh the single working draft (= next version); live delivery is untouched until an operator publishes. A `snippet_reference` MAY point to a not-yet-published DRAFT snippet — it only needs to exist and not be archived (preview resolves the draft; live delivery needs an operator publish — the MCP cannot publish). Requires `content:write`.",
   {
     document_id: z.number().int().positive(),
     section_id: z
@@ -1918,14 +2224,24 @@ server.tool(
       ),
     ...idempotencyInput,
   },
-  async ({ document_id, section_id, idempotency_key, ...body }) =>
-    asToolResult(
-      await callManagement(
-        "PUT",
-        `/documents/${document_id}/sections/${section_id}/blocks`,
-        { body, idempotencyKey: idempotency_key },
-      ),
-    ),
+  async ({ document_id, section_id, idempotency_key, ...body }) => {
+    const result = await callManagement(
+      "PUT",
+      `/documents/${document_id}/sections/${section_id}/blocks`,
+      { body, idempotencyKey: idempotency_key },
+    );
+    if (!result.ok || body.kind === "snippet_reference") return asToolResult(result);
+    // Corpus text in a shared document reaches every audience brand —
+    // say so right where the write happens.
+    const ctxRes = await brandContextFor(document_id);
+    const ctx = ctxRes.ok ? ctxRes.ctx : null;
+    if (!ctx?.is_multi_brand) return asToolResult(result);
+    const names = (ctx.brands ?? []).map((b) => b.name).join(", ");
+    return jsonResult({
+      ...result.data,
+      _notice: `This ${body.kind} block is part of the SHARED corpus and will be delivered to ALL ${(ctx.brands ?? []).length} brands of this document (${names}). If the text is meant for only some brands, move it into a snippet: brand-variant wording → snippet default + brand override; brand-only section → optional snippet (is_optional=true, empty default) with content overrides for those brands.`,
+    });
+  },
 );
 
 server.tool(
